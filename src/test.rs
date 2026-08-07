@@ -1,0 +1,347 @@
+use std::collections::HashMap;
+
+const TESTS_PER_INSN : usize = 2500;
+
+struct TestCase {
+    name: String,
+    source: Vec<String>,
+    regs: Vec<u16>
+}
+
+impl PIC16F876State {
+    fn get_test_regs(&self, endl: u8, test_case: &TestCase) -> TestRegs {
+        let mut reg_map = HashMap::<u16, u8>::new();
+        for reg in &test_case.regs {
+            reg_map.insert(*reg, self.get_reg(*reg));
+        }
+
+        TestRegs { w: self.w,
+                  pc: self.pc,
+                  status: self.get_status(),
+                  endl: endl,
+                  regs: reg_map }
+    }
+}
+
+fn concat_lines(lines: &Vec<String>) -> String {
+    lines.iter().fold("".to_string(), |acc, x| format!("{}{}\n", acc, x)) + "endl:\nGOTO endl\nEND"
+}
+
+fn get_reg(reg: &str, dump: &str) -> io::Result<u16> {
+    let re = regex::Regex::new(&format!(r"^{} = ([0-9a-fx]+)$", reg)).unwrap();
+
+    for line in dump.lines() {
+        if let Some(caps) = re.captures(&line) {
+            return Ok(u16::from_str_radix(&caps[1].trim_start_matches("0x"), 16).unwrap());
+        }
+    }
+    return Err(std::io::Error::other(format!("Could not find '{}'", reg)));
+}
+
+fn get_reg_at(addr: u16, dump: &str) -> io::Result<u16> {
+    get_reg(&format!(r".*\[{:#x}\]", addr), dump)
+}
+
+fn get_status(dump: &str) -> io::Result<u16> {
+    let re = regex::Regex::new(r"\s+status\s+=\s+([0-9a-fx]+)\s+").unwrap();
+
+    for line in dump.lines() {
+        if let Some(caps) = re.captures(&line) {
+            return Ok(u16::from_str_radix(&caps[1].trim_start_matches("0x"), 16).unwrap());
+        }
+    }
+    return Err(std::io::Error::other(format!("Could not find 'status'.")));
+}
+
+fn print_file(file_buf: &std::path::PathBuf) -> io::Result<()> {
+    println!("{:?}:", file_buf);
+    std::fs::read_to_string(file_buf)?.lines().for_each(|l| println!("\t{}", l));
+    Ok(())
+}
+
+struct GPSimData {
+    src: std::path::PathBuf,
+    hex: std::path::PathBuf,
+    cod: std::path::PathBuf,
+    comm: std::path::PathBuf
+}
+
+#[derive(PartialEq, Eq)]
+struct TestRegs {
+    w: u8,
+    pc: u16,
+    status: u8,
+    endl: u8,
+    regs: HashMap<u16, u8>
+}
+
+fn run_gpsim(test_case: &TestCase, gpsim_data: &GPSimData) -> io::Result<TestRegs> {
+    let comm_source = test_case
+        .regs
+        .iter()
+        .fold("break e endl\nrun\ndump\nsymbol endl".to_string(),
+              | acc, x | format!("{}\nreg({})", acc, x));
+
+    let _ = std::fs::write(&gpsim_data.comm, format!("{}\nquit", comm_source).to_string());
+
+    print_file(&gpsim_data.comm)?;
+
+    let gpsim_out = std::process::Command::new("gpsim")
+        .args(["-c", gpsim_data.comm.to_str().unwrap(), gpsim_data.cod.to_str().unwrap()]).output()?;
+
+    let gpsim_dump = String::from_utf8_lossy(&gpsim_out.stdout).to_string();
+    let mut reg_map = HashMap::<u16, u8>::new();
+    for reg in &test_case.regs {
+        reg_map.insert(*reg, get_reg_at(*reg, &gpsim_dump)? as u8);
+    }
+
+    Ok(TestRegs { w: get_reg("W", &gpsim_dump)? as u8,
+                  pc: get_reg("pc", &gpsim_dump)?,
+                  status: get_status(&gpsim_dump)? as u8,
+                  endl: (get_reg("goto", &gpsim_dump)? & 0x3ff) as u8,
+                  regs: reg_map })
+}
+
+fn print_diff(test_regs: &TestRegs, gpsim_test_regs: &TestRegs) {
+    println!("{:>8} {:>8} {:>8}", "reg", "test", "gpsim");
+    println!("{:>8} {:>8x} {:>8x}", "W", test_regs.w, gpsim_test_regs.w);
+    println!("{:>8} {:>8x} {:>8x}", "PC", test_regs.pc, gpsim_test_regs.pc);
+    println!("{:>8} {:>8x} {:>8x}", "STATUS", test_regs.status, gpsim_test_regs.status);
+
+    for (reg, gpsim_val) in &gpsim_test_regs.regs {
+        println!("{:>8x} {:>8x} {:>8x}", reg, test_regs.regs[&reg], gpsim_val);
+    }
+}
+
+fn run_test<F>(test_case: &TestCase, test: F) -> io::Result<()>
+where F: Fn(&String) {
+    unsafe { std::env::set_var("DEBUG_INSN", "1"); }
+    let dir = tempfile::tempdir()?;
+
+    let base_path = dir.path().join(&test_case.name);
+
+    let gpsim_data = GPSimData {
+        src: base_path.with_extension("asm"),
+        hex: base_path.with_extension("hex"),
+        cod: base_path.with_extension("cod"),
+        comm: dir.path().join(format!("{}.cmd", &test_case.name)) };
+
+    let _ = std::fs::write(&gpsim_data.src, concat_lines(&test_case.source).to_string());
+
+    print_file(&gpsim_data.src)?;
+
+    let gpasm_out = std::process::Command::new("gpasm")
+        .args(["-p16f876", "-o", gpsim_data.hex.to_str().unwrap(), gpsim_data.src.to_str().unwrap()]).output()?;
+
+    print_file(&gpsim_data.hex)?;
+
+    assert!(
+        gpasm_out.status.success(),
+        "gpasm failed:\n{}",
+        String::from_utf8_lossy(&gpasm_out.stdout)
+    );
+
+    let gpsim_test_regs = run_gpsim(&test_case, &gpsim_data)?;
+
+    let mut pic: PIC16F876State = PIC16F876State::new();
+    pic.init();
+    pic.load_hex(&gpsim_data.hex.to_str().unwrap())?;
+    pic.run_until(Some(gpsim_test_regs.endl as u16)).unwrap();
+
+    let test_regs = pic.get_test_regs(gpsim_test_regs.endl, &test_case);
+
+    print_diff(&test_regs, &gpsim_test_regs);
+
+    assert!(test_regs == gpsim_test_regs, "Registers differ.");
+
+    test(&(std::fs::read_to_string(&gpsim_data.hex)?));
+
+    Ok(())
+}
+
+macro_rules! test_instr {
+    ($name:expr, [$($line:expr),* $(,)?], [$($reg:expr),* $(,)?], $check:expr) => {
+        let _ = run_test(
+            &TestCase {
+                name: $name,
+                source: vec![$($line),*],
+                regs: vec![$($reg),*]
+            },
+            $check,
+        );
+    };
+}
+
+enum WFEnum {
+    F(u16),
+    W
+}
+
+fn get_wf_src(insn: &str, op1: u8, op2: u8, addr: u16, d: u8) -> Vec<String> {
+    assert!(d <= 1, "Invalid direction bit.");
+    vec![ format!("MOVLW {:#x}", op1),
+          format!("MOVWF {:#x}", addr),
+          format!("MOVLW {:#x}", op2),
+          format!("{} {:#x}, {:#x}", insn, addr, d),
+          "NOP".to_string() ]
+}
+
+fn get_f_src(insn: &str, val: u8, addr: u16) -> Vec<String> {
+    vec![ format!("MOVLW {:#x}", val),
+          format!("MOVWF {:#x}", addr),
+          format!("{} {:#x}", insn, addr) ]
+}
+
+fn get_w_src(insn: &str, val: u8) -> Vec<String> {
+    vec![ format!("MOVLW {:#x}", val),
+          format!("{}", insn) ]
+}
+
+fn get_bit_op_src(insn: &str, val: u8, addr: u16, bit: u8) -> Vec<String> {
+    assert!(bit < 8, "Invalid bit position.");
+    vec![ format!("MOVLW {:#x}", val),
+          format!("MOVWF {:#x}", addr),
+          format!("{} {:#x}, {:#x}", insn, addr, bit),
+          "NOP".to_string() ]
+}
+
+fn test_wf(insn: &str) {
+    for _ in 0..TESTS_PER_INSN {
+        let op1 : u8 = rand::random_range(0..255);
+        let op2 : u8 = rand::random_range(0..255);
+        let addr : u16 = rand::random_range(0x20..0x7f);
+        let wf : u8 = rand::random_range(0..1);
+        run_test(&TestCase { name: insn.to_string(),
+                             source: get_wf_src(insn, op1, op2, addr, wf),
+                             regs: vec![ addr ] },
+                 |hex| assert!(!hex.is_empty()));
+    }
+}
+
+fn test_f(insn: &str) {
+    for _ in 0..TESTS_PER_INSN {
+        let val : u8 = rand::random_range(0..255);
+        let addr : u16 = rand::random_range(0x20..0x7f);
+        run_test(&TestCase { name: insn.to_string(),
+                             source: get_f_src(insn, val, addr),
+                             regs: vec![ addr ] },
+                 |hex| assert!(!hex.is_empty()));
+    }
+}
+
+fn test_w(insn: &str) {
+    for _ in 0..TESTS_PER_INSN {
+        let val : u8 = rand::random_range(0..255);
+        run_test(&TestCase { name: insn.to_string(),
+                             source: get_w_src(insn, val),
+                             regs: vec![ ] },
+                 |hex| assert!(!hex.is_empty()));
+    }
+}
+
+fn test_bit_op(insn: &str) {
+    for _ in 0..TESTS_PER_INSN {
+        let val : u8 = rand::random_range(0..255);
+        let addr : u16 = rand::random_range(0x20..0x7f);
+        let bit : u8 = rand::random_range(0..7);
+        run_test(&TestCase { name: insn.to_string(),
+                             source: get_bit_op_src(insn, val, addr, bit),
+                             regs: vec![ addr ] },
+                 |hex| assert!(!hex.is_empty()));
+    }
+}
+
+#[test]
+fn test_addwf() {
+    test_wf("ADDWF");
+}
+
+#[test]
+fn test_subwf() {
+    test_wf("SUBWF");
+}
+
+#[test]
+fn test_andwf() {
+    test_wf("ANDWF");
+}
+
+#[test]
+fn test_iorwf() {
+    test_wf("IORWF");
+}
+
+#[test]
+fn test_comf() {
+    test_wf("COMF");
+}
+
+#[test]
+fn test_decf() {
+    test_wf("DECF");
+}
+
+#[test]
+fn test_decfsz() {
+    test_wf("DECFSZ");
+}
+
+#[test]
+fn test_incf() {
+    test_wf("INCF");
+}
+
+#[test]
+fn test_incfsz() {
+    test_wf("INCFSZ");
+}
+
+#[test]
+fn test_rlf() {
+    test_wf("RLF");
+}
+
+#[test]
+fn test_rrf() {
+    test_wf("RRF");
+}
+
+#[test]
+fn test_movf() {
+    test_wf("MOVF");
+}
+
+#[test]
+fn test_swapf() {
+    test_wf("SWAPF");
+}
+
+#[test]
+fn test_clrf() {
+    test_f("CLRF");
+}
+
+#[test]
+fn test_clrw() {
+    test_w("CLRW");
+}
+
+#[test]
+fn test_bcf() {
+    test_bit_op("BCF");
+}
+
+#[test]
+fn test_bsf() {
+    test_bit_op("BSF");
+}
+
+#[test]
+fn test_btfsc() {
+    test_bit_op("BTFSC");
+}
+
+#[test]
+fn test_btfss() {
+    test_bit_op("BTFSS");
+}
