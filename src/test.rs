@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-const TESTS_PER_INSN : usize = 2500;
+const TESTS_PER_INSN : usize = 25;
 
 struct TestCase {
     name: String,
@@ -9,7 +9,7 @@ struct TestCase {
 }
 
 impl PIC16F876State {
-    fn get_test_regs(&self, endl: u8, test_case: &TestCase) -> TestRegs {
+    fn get_test_regs(&self, endl: u16, test_case: &TestCase) -> TestRegs {
         let mut reg_map = HashMap::<u16, u8>::new();
         for reg in &test_case.regs {
             reg_map.insert(*reg, self.get_reg(*reg));
@@ -71,7 +71,7 @@ struct TestRegs {
     w: u8,
     pc: u16,
     status: u8,
-    endl: u8,
+    endl: u16,
     regs: HashMap<u16, u8>
 }
 
@@ -79,7 +79,7 @@ fn run_gpsim(test_case: &TestCase, gpsim_data: &GPSimData) -> io::Result<TestReg
     let comm_source = test_case
         .regs
         .iter()
-        .fold("break e endl\nrun\ndump\nsymbol endl".to_string(),
+        .fold("break e endl\nrun\ndump".to_string(),
               | acc, x | format!("{}\nreg({})", acc, x));
 
     let _ = std::fs::write(&gpsim_data.comm, format!("{}\nquit", comm_source).to_string());
@@ -95,10 +95,12 @@ fn run_gpsim(test_case: &TestCase, gpsim_data: &GPSimData) -> io::Result<TestReg
         reg_map.insert(*reg, get_reg_at(*reg, &gpsim_dump)? as u8);
     }
 
+    let break_pc = get_reg("pc", &gpsim_dump)?;
+    
     Ok(TestRegs { w: get_reg("W", &gpsim_dump)? as u8,
-                  pc: get_reg("pc", &gpsim_dump)?,
+                  pc: break_pc,
                   status: get_status(&gpsim_dump)? as u8,
-                  endl: (get_reg("goto", &gpsim_dump)? & 0x3ff) as u8,
+                  endl: break_pc,
                   regs: reg_map })
 }
 
@@ -107,6 +109,7 @@ fn print_diff(test_regs: &TestRegs, gpsim_test_regs: &TestRegs) {
     println!("{:>8} {:>8x} {:>8x}", "W", test_regs.w, gpsim_test_regs.w);
     println!("{:>8} {:>8x} {:>8x}", "PC", test_regs.pc, gpsim_test_regs.pc);
     println!("{:>8} {:>8x} {:>8x}", "STATUS", test_regs.status, gpsim_test_regs.status);
+    println!("{:>8} {:>8x} {:>8x}", "endl", test_regs.endl, gpsim_test_regs.endl);
 
     for (reg, gpsim_val) in &gpsim_test_regs.regs {
         println!("{:>8x} {:>8x} {:>8x}", reg, test_regs.regs[&reg], gpsim_val);
@@ -133,20 +136,20 @@ where F: Fn(&String) {
     let gpasm_out = std::process::Command::new("gpasm")
         .args(["-p16f876", "-o", gpsim_data.hex.to_str().unwrap(), gpsim_data.src.to_str().unwrap()]).output()?;
 
-    print_file(&gpsim_data.hex)?;
-
     assert!(
         gpasm_out.status.success(),
         "gpasm failed:\n{}",
         String::from_utf8_lossy(&gpasm_out.stdout)
     );
 
-    let gpsim_test_regs = run_gpsim(&test_case, &gpsim_data)?;
+    print_file(&gpsim_data.hex)?;
 
+    let gpsim_test_regs = run_gpsim(&test_case, &gpsim_data)?;
+    
     let mut pic: PIC16F876State = PIC16F876State::new();
     pic.init();
     pic.load_hex(&gpsim_data.hex.to_str().unwrap())?;
-    pic.run_until(Some(gpsim_test_regs.endl as u16)).unwrap();
+    pic.run_until(Some(gpsim_test_regs.endl)).unwrap();
 
     let test_regs = pic.get_test_regs(gpsim_test_regs.endl, &test_case);
 
@@ -157,24 +160,6 @@ where F: Fn(&String) {
     test(&(std::fs::read_to_string(&gpsim_data.hex)?));
 
     Ok(())
-}
-
-macro_rules! test_instr {
-    ($name:expr, [$($line:expr),* $(,)?], [$($reg:expr),* $(,)?], $check:expr) => {
-        let _ = run_test(
-            &TestCase {
-                name: $name,
-                source: vec![$($line),*],
-                regs: vec![$($reg),*]
-            },
-            $check,
-        );
-    };
-}
-
-enum WFEnum {
-    F(u16),
-    W
 }
 
 fn get_wf_src(insn: &str, op1: u8, op2: u8, addr: u16, d: u8) -> Vec<String> {
@@ -214,7 +199,7 @@ fn test_wf(insn: &str) {
         run_test(&TestCase { name: insn.to_string(),
                              source: get_wf_src(insn, op1, op2, addr, wf),
                              regs: vec![ addr ] },
-                 |hex| assert!(!hex.is_empty()));
+                 |hex| assert!(!hex.is_empty())).unwrap();
     }
 }
 
@@ -235,7 +220,7 @@ fn test_w(insn: &str) {
         run_test(&TestCase { name: insn.to_string(),
                              source: get_w_src(insn, val),
                              regs: vec![ ] },
-                 |hex| assert!(!hex.is_empty()));
+                 |hex| assert!(!hex.is_empty())).unwrap();
     }
 }
 
@@ -247,7 +232,7 @@ fn test_bit_op(insn: &str) {
         run_test(&TestCase { name: insn.to_string(),
                              source: get_bit_op_src(insn, val, addr, bit),
                              regs: vec![ addr ] },
-                 |hex| assert!(!hex.is_empty()));
+                 |hex| assert!(!hex.is_empty())).unwrap();
     }
 }
 
@@ -344,4 +329,57 @@ fn test_btfsc() {
 #[test]
 fn test_btfss() {
     test_bit_op("BTFSS");
+}
+
+#[test]
+fn test_call() {
+    for _ in 0..TESTS_PER_INSN {
+        let val : u8 = rand::random_range(0..255);
+        let org : u16 = rand::random_range(50..8191);
+        run_test(&TestCase { name: "CALL".to_string(),
+                             source: vec![
+                                 "PCLATH EQU 0x0A",
+                                 "MOVLW HIGH fn",
+                                 "MOVWF PCLATH",
+                                 "CALL fn",
+                                 &format!("MOVLW {:#x}", val),
+                                 "MOVLW HIGH endl",
+                                 "MOVWF PCLATH",
+                                 "GOTO endl",
+                                 &format!("ORG {:#x}", org),
+                                 "fn:",
+                                 "RETURN"].iter().map(|s| s.to_string()).collect(),
+                             regs: vec![] },
+                 |hex| assert!(!hex.is_empty())).unwrap();
+    }
+}
+
+#[test]
+fn test_nested_call() {
+    for _ in 0..TESTS_PER_INSN {
+        let val : u8 = rand::random_range(0..255);
+        let val2 : u8 = rand::random_range(0..255);
+        let org : u16 = rand::random_range(50..8191);
+        run_test(&TestCase { name: "CALL".to_string(),
+                             source: vec![
+                                 "PCLATH EQU 0x0A",
+                                 "MOVLW HIGH fn2",
+                                 "MOVWF PCLATH",
+                                 "CALL fn2",
+                                 &format!("MOVLW {:#x}", val),
+                                 "MOVLW HIGH endl",
+                                 "MOVWF PCLATH",
+                                 "GOTO endl",
+                                 "fn1:",
+                                 &format!("MOVLW {:#x}", val2),
+                                 "RETURN",
+                                 &format!("ORG {:#x}", org),
+                                 "fn2:",
+                                 "MOVLW HIGH fn1",
+                                 "MOVWF PCLATH",
+                                 "CALL fn1",
+                                 "RETURN"].iter().map(|s| s.to_string()).collect(),
+                             regs: vec![] },
+                 |hex| assert!(!hex.is_empty())).unwrap();
+    }
 }

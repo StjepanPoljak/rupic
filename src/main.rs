@@ -94,15 +94,40 @@ fn parse_line(line_tuple: (usize, &str)) -> io::Result<PICRecord> {
 struct PIC16F876State {
     pc: u16,
     w: u8,
-    program: Vec<u16>,
-    regs: Vec<u8>
+    program: [u16; 0x2000],
+    regs: [u8; 512],
+    stack: [u16; 8],
+    sp: u8
 }
 
 impl PIC16F876State {    
     fn new() -> Self {
-        Self { pc: 0x0, w: 0x0, program: vec![0x3fffu16; 0x2000], regs: vec![0u8; 512] }
+        Self { pc: 0x0,
+               w: 0x0,
+               program: [0x3fffu16; 0x2000],
+               regs: [0u8; 512],
+               stack: [0u16; 8],
+               sp: 0 }
     }
 
+    fn push(&mut self) -> io::Result<()> {
+        if self.sp >= 8 {
+            return Err(io::Error::other("Stack overflow."));
+        }
+        self.stack[self.sp as usize] = self.pc;
+        self.sp += 1;
+        Ok(())
+    }
+
+    fn pop(&mut self) -> io::Result<()> {
+        if self.sp == 0 {
+            return Err(io::Error::other("Stack underflow."));
+        }
+        self.sp -= 1;
+        self.pc = self.stack[self.sp as usize];
+        Ok(())
+    }
+    
     fn set_reg(&mut self, reg: u16, val: u8) {
         self.regs[reg as usize] = val
     }
@@ -111,10 +136,18 @@ impl PIC16F876State {
         self.regs[reg as usize]
     }
 
+    fn get_full_addr(&self, addr: u16) -> u16 {
+        ((self.get_pclath() as u16 & 0x18) << 8) | (addr & 0x07ff)
+    }
+    
     fn get_status(&self) -> u8 {
         self.regs[Register::STATUS as usize]
     }
-    
+
+    fn get_pclath(&self) -> u8 {
+        self.regs[Register::PCLATH as usize]
+    }
+
     fn update_status_bit(&mut self, bit: StatusBit, val: bool) {
         if val == true {
             self.regs[Register::STATUS as usize] |= 1 << (bit as u8);
@@ -125,13 +158,14 @@ impl PIC16F876State {
     
     fn init(&mut self) {
         self.set_reg(Register::STATUS as u16, 0x18);
+        self.set_reg(Register::PCLATH as u16, 0x0);
     }
 
     fn exec_rec(&mut self, rec: &PICRecord, base: &mut usize) {
         match rec {
             PICRecord::Data { addr, bytes } => {
-                let start = *base + (*addr as usize);
-                let end = *base + (*addr as usize) + (bytes.len() / 2);
+                let start = *base + ((*addr / 2) as usize);
+                let end = *base + ((*addr / 2) as usize) + (bytes.len() / 2);
                 let bytes16 = bytes
                     .chunks_exact(2)
                     .map(|c| u16::from_le_bytes ([c[0], c[1]]) & 0x3fff)
@@ -140,7 +174,7 @@ impl PIC16F876State {
                     .copy_from_slice(&bytes16);
             },
             PICRecord::ExtendedLinear(new_base) => {
-                *base = *new_base as usize;
+                *base = (*new_base) as usize;
             },
             _ => ()
         }
@@ -179,7 +213,7 @@ impl PIC16F876State {
         match lsb & 0x80 {
             0x00 => { self.w = res as u8; },
             0x80 => { self.set_reg(reg, res as u8); },
-            _ => { println!("NOT SUPPOSED TO BE HERE"); }
+            _ => ()
         };
         ret
     }
@@ -268,6 +302,7 @@ impl PIC16F876State {
                          return 2; },
             0x08 => { /* RETURN */
                          trace_insn("RETURN");
+                         self.pop();
                          return 2; },
             0x64 => { /* CLRWDT */
                          trace_insn("CLRWDT");
@@ -390,6 +425,8 @@ impl PIC16F876State {
                         self.w = (bytes & 0xff) as u8; } else {
                      /* RETLW */
                         trace_insn("RETLW");
+                        self.w = (bytes & 0xff) as u8;
+                        self.pop();
                         cycles = 2; } },
             0x4 => { /* BCF */
                         trace_insn("BCF");
@@ -419,17 +456,18 @@ impl PIC16F876State {
         executed = true;
         insn = insn >> 1;
 
-        let addr = bytes & 0x03ff;
-        
+        let addr = self.get_full_addr(bytes);
+
         match insn {
             0x4 => { /* CALL */
                         trace_insn("CALL");
-                        self.pc = addr;
+                        self.push();
+                        self.pc = addr - 1;
                         cycles = 2;
             },
             0x5 => { /* GOTO */
                         trace_insn("GOTO");
-                        self.pc = addr;
+                        self.pc = addr - 1;
                         cycles = 2;
             },
             _ => { executed = false; }
