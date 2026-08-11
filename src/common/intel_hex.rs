@@ -96,5 +96,4 @@ impl ByteData {
 
         Ok(res)
     }
-
 }

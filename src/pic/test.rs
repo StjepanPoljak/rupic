@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use crate::Board;
 
 const TESTS_PER_INSN : usize = 25;
 
@@ -8,21 +9,28 @@ struct TestCase {
     regs: Vec<u16>
 }
 
-impl PIC16F876State {
+impl PIC16F876 {
     fn get_test_regs(&self, endl: u16, test_case: &TestCase) -> TestRegs {
         let mut reg_map = HashMap::<u16, u8>::new();
         for reg in &test_case.regs {
-            reg_map.insert(*reg, self.get_reg(*reg));
+            reg_map.insert(*reg, self.bus.read(*reg));
         }
 
-        TestRegs { w: self.w,
-                  pc: self.pc,
-                  status: self.get_status(),
+        TestRegs { w: self.core.w,
+                  pc: self.core.pc,
+                  status: self.core.get_status(&self.bus),
                   endl: endl,
                   regs: reg_map }
     }
 }
-
+/*
+impl Board {
+    fn get_test_regs_for(&self, c_idx: usize, endl: u16, test_case: &TestCase) -> TestRegs {
+        let pic = self.components[c_idx];
+        pic.get_test_regs(endl, test_case)
+    }
+}
+*/
 fn concat_lines(lines: &Vec<String>) -> String {
     lines.iter().fold("".to_string(), |acc, x| format!("{}{}\n", acc, x)) + "endl:\nGOTO endl\nEND"
 }
@@ -145,13 +153,22 @@ where F: Fn(&String) {
     print_file(&gpsim_data.hex)?;
 
     let gpsim_test_regs = run_gpsim(&test_case, &gpsim_data)?;
-    
-    let mut pic: PIC16F876State = PIC16F876State::new();
-    pic.init();
-    pic.load_rom(&ByteData::new_from_intel_hex(&gpsim_data.hex.to_str().unwrap())?);
-    pic.run_until(Some(gpsim_test_regs.endl)).unwrap();
 
-    let test_regs = pic.get_test_regs(gpsim_test_regs.endl, &test_case);
+    let mut board = Board::new();
+
+    let mut pic: PIC16F876 = PIC16F876::new();
+    pic.load_rom(&ByteData::new_from_intel_hex(&gpsim_data.hex.to_str().unwrap())?);
+
+    let pic_idx = board.add_component(Box::new(pic));
+    board.add_breakpoint(pic_idx, gpsim_test_regs.endl as usize);
+    board.init_components();
+    board.run();
+
+    let mut pic2 = board.components[pic_idx]
+        .as_any_mut()
+        .downcast_mut::<PIC16F876>()
+        .expect("index points at the PIC");
+    let test_regs = pic2.get_test_regs(gpsim_test_regs.endl, &test_case);
 
     print_diff(&test_regs, &gpsim_test_regs);
 
