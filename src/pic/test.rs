@@ -148,7 +148,7 @@ where F: Fn(&String) {
     
     let mut pic: PIC16F876State = PIC16F876State::new();
     pic.init();
-    pic.load_hex(&gpsim_data.hex.to_str().unwrap())?;
+    pic.load_rom(&ByteData::new_from_intel_hex(&gpsim_data.hex.to_str().unwrap())?);
     pic.run_until(Some(gpsim_test_regs.endl)).unwrap();
 
     let test_regs = pic.get_test_regs(gpsim_test_regs.endl, &test_case);
