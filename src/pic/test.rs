@@ -9,28 +9,6 @@ struct TestCase {
     regs: Vec<u16>
 }
 
-impl PIC16F876 {
-    fn get_test_regs(&self, endl: u16, test_case: &TestCase) -> TestRegs {
-        let mut reg_map = HashMap::<u16, u8>::new();
-        for reg in &test_case.regs {
-            reg_map.insert(*reg, self.bus.read(*reg));
-        }
-
-        TestRegs { w: self.core.w,
-                  pc: self.core.pc,
-                  status: self.core.get_status(&self.bus),
-                  endl: endl,
-                  regs: reg_map }
-    }
-}
-/*
-impl Board {
-    fn get_test_regs_for(&self, c_idx: usize, endl: u16, test_case: &TestCase) -> TestRegs {
-        let pic = self.components[c_idx];
-        pic.get_test_regs(endl, test_case)
-    }
-}
-*/
 fn concat_lines(lines: &Vec<String>) -> String {
     lines.iter().fold("".to_string(), |acc, x| format!("{}{}\n", acc, x)) + "endl:\nGOTO endl\nEND"
 }
@@ -164,11 +142,25 @@ where F: Fn(&String) {
     board.init_components();
     board.run();
 
-    let mut pic2 = board.components[pic_idx]
-        .as_any_mut()
-        .downcast_mut::<PIC16F876>()
-        .expect("index points at the PIC");
-    let test_regs = pic2.get_test_regs(gpsim_test_regs.endl, &test_case);
+    let pic_mcu = board.get_component(pic_idx)?
+        .as_mcu()
+        .ok_or(io::Error::other("Could not convert component to MCU."))?;
+
+    let reg_dump = pic_mcu.dump_regs().unwrap();
+
+    let mut reg_map = HashMap::<u16, u8>::new();
+    for mem_addr in &test_case.regs {
+        let mem_dump = pic_mcu.dump_mem(*mem_addr as usize, 1).unwrap();
+        reg_map.insert(*mem_addr as u16, mem_dump.get_val(0) as u8);
+    }
+
+    let test_regs = TestRegs {
+        w: reg_dump.get("W").unwrap().value as u8,
+                  pc: reg_dump.get("PC").unwrap().value as u16,
+                  status: reg_dump.get("STATUS").unwrap().value as u8,
+                  endl: gpsim_test_regs.endl,
+                  regs: reg_map };
+
 
     print_diff(&test_regs, &gpsim_test_regs);
 

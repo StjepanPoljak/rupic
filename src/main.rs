@@ -10,46 +10,55 @@ use crate::pic::pic16f876::PIC16F876;
 use crate::common::byte_data::*;
 
 pub struct Breakpoint {
-    c_idx: usize,
     addr: usize
 }
 
-pub struct Board {
-    components: Vec<Box<dyn Component>>,
+pub struct BoardComponent {
+    component: Box<dyn Component>,
     breakpoints: Vec<Breakpoint>
+}
+
+pub struct Board {
+    components: Vec<BoardComponent>
 }
 
 impl Board {
     fn new() -> Self {
-        Self { components: vec![], breakpoints: vec![] }
+        Self { components: vec![] }
     }
 
     fn add_component(&mut self, component: Box<dyn Component>) -> usize {
-        self.components.push(component);
+        self.components.push(BoardComponent { component, breakpoints: vec![] });
         self.components.len() - 1
     }
 
-    fn add_breakpoint(&mut self, c_idx: usize, addr: usize) -> usize {
-        self.breakpoints.push(Breakpoint{c_idx, addr});
-        self.breakpoints.len() - 1
+    fn add_breakpoint(&mut self, bc_idx: usize, addr: usize) -> (usize, usize) {
+        let mut bc = &mut self.components[bc_idx];
+        bc.breakpoints.push(Breakpoint{ addr });
+        (bc_idx, bc.breakpoints.len() - 1)
     }
 
     fn init_components(&mut self) {
-        self.components.iter_mut().for_each(|c| c.init());
+        self.components.iter_mut().for_each(|bc| bc.component.init());
+    }
+
+    fn get_component(&mut self, bc_idx: usize) -> io::Result<&mut dyn Component> {
+        let bc = self.components.get_mut(bc_idx).ok_or(io::Error::other(format!("Component with index {bc_idx} does not exist.")))?;
+        Ok(bc.component.as_mut())
     }
 
     fn step(&mut self) -> bool {
         let mut got_bp = false;
-        for (c_idx, c) in self.components.iter_mut().enumerate() {
-            if let Some(mcu) = c.as_mcu() {
+        for (bc_idx, bc) in self.components.iter_mut().enumerate() {
+            if let Some(mcu) = bc.component.as_mcu() {
                 let mcu_pc = mcu.pc();
-                for bp in &self.breakpoints {
-                    if bp.c_idx == c_idx && mcu_pc == bp.addr {
+                for bp in &bc.breakpoints {
+                    if mcu_pc == bp.addr {
                         got_bp = true;
                     }
                 }
             }
-            let _ = c.step();
+            let _ = bc.component.step();
         }
 
         return got_bp;

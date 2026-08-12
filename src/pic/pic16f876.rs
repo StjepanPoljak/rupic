@@ -6,6 +6,7 @@ use std::any::Any;
 
 include!("./test.rs");
 
+// TODO: needs to be reworked to support larger sizes
 pub trait Bus {
     fn read(&self, addr: u16) -> u8;
     fn write(&mut self, addr: u16, val: u8);
@@ -18,9 +19,6 @@ pub trait Component {
 
     fn as_mcu(&self) -> Option<&dyn MCU> { None }
     fn as_mcu_mut(&mut self) -> Option<&mut dyn MCU> { None }
-
-    fn as_any(&self) -> &dyn Any;
-    fn as_any_mut(&mut self) -> &mut dyn Any;
 }
 
 pub struct PIC16F876Bus {
@@ -53,9 +51,27 @@ pub struct P16 {
     sp: u8
 }
 
+pub struct RegDump {
+    value: usize,
+    bit_width: usize
+}
+
+pub struct MemDump {
+    values: Vec<usize>,
+    bit_width: usize
+}
+
+impl MemDump {
+    fn get_val(&self, idx: usize) -> usize {
+        self.values[idx]
+    }
+}
+
 pub trait MCU {
     fn load_rom(&mut self, byte_data: &ByteData);
     fn pc(&self) -> usize;
+    fn dump_mem(&self, addr: usize, item_count: usize) -> Option<MemDump> { None }
+    fn dump_regs(&self) -> Option<HashMap<&str, RegDump>> { None }
 }
 
 impl MCU for PIC16F876 {
@@ -65,6 +81,22 @@ impl MCU for PIC16F876 {
 
     fn pc(&self) -> usize {
         self.core.pc as usize
+    }
+
+    fn dump_mem(&self, addr: usize, item_count: usize) -> Option<MemDump> {
+        let mut vec: Vec<usize> = vec![];
+        for i in 0..=item_count {
+            vec.push(self.bus.read((addr + i) as u16) as usize);
+        }
+        Some(MemDump{values: vec, bit_width: 8})
+    }
+
+    fn dump_regs(&self) -> Option<HashMap<&str, RegDump>> {
+        let mut res = HashMap::<&str, RegDump>::new();
+        res.insert("W", RegDump { value: self.core.w as usize, bit_width: 8 });
+        res.insert("PC", RegDump { value: self.pc() as usize, bit_width: 14 });
+        res.insert("STATUS", RegDump { value: self.core.get_status(&self.bus) as usize, bit_width: 8 });
+        Some(res)
     }
 }
 
@@ -110,9 +142,6 @@ impl Component for PIC16F876 {
 
     fn as_mcu(&self) -> Option<&dyn MCU> { Some(self) }
     fn as_mcu_mut(&mut self) -> Option<&mut dyn MCU> { Some(self) }
-
-    fn as_any(&self) -> &dyn Any { self }
-    fn as_any_mut(&mut self) -> &mut dyn Any { self }
 }
 
 impl P16 {
