@@ -154,13 +154,11 @@ where F: Fn(&String) {
         reg_map.insert(*mem_addr as u16, mem_dump.get_val(0) as u8);
     }
 
-    let test_regs = TestRegs {
-        w: reg_dump.get("W").unwrap().value as u8,
-                  pc: reg_dump.get("PC").unwrap().value as u16,
-                  status: reg_dump.get("STATUS").unwrap().value as u8,
-                  endl: gpsim_test_regs.endl,
-                  regs: reg_map };
-
+    let test_regs = TestRegs { w: reg_dump.get("W").unwrap().value as u8,
+                               pc: reg_dump.get("PC").unwrap().value as u16,
+                               status: reg_dump.get("STATUS").unwrap().value as u8,
+                               endl: gpsim_test_regs.endl,
+                               regs: reg_map };
 
     print_diff(&test_regs, &gpsim_test_regs);
 
@@ -389,6 +387,40 @@ fn test_nested_call() {
                                  "CALL fn1",
                                  "RETURN"].iter().map(|s| s.to_string()).collect(),
                              regs: vec![] },
+                 |hex| assert!(!hex.is_empty())).unwrap();
+    }
+}
+
+#[test]
+fn test_indf() {
+    for _ in 0..TESTS_PER_INSN {
+        let val : u8 = rand::random_range(0..=255);
+        let bank : u8 = rand::random_range(0..=3);
+        let range = match bank {
+            0 => (0x20..=0x7f),
+            1 => (0xA0..=0xef),
+            2 => (0x110..=0x16f),
+            _ => (0x190..=0x1ef)
+        };
+        let addr : u16 = rand::random_range(range.clone());
+        let addr2 : u16 = rand::random_range(range);
+        let org : u16 = rand::random_range(50..=8191);
+        run_test(&TestCase { name: "CALL".to_string(),
+                             source: vec![
+                                 "INDF EQU 0x0",
+                                 "STATUS EQU 0x3",
+                                 "FSR EQU 0x04",
+                                 "RP0 EQU 0x05",
+                                 "RP1 EQU 0x06",
+                                 "IRP EQU 0x07",
+                                 &format!("MOVLW {:#x}", (bank << 6) | (if bank < 2 { 0 } else { 1 << 7 })),
+                                 "IORWF STATUS, 0x1",
+                                 &format!("MOVLW {:#x}", addr),
+                                 "MOVWF FSR",
+                                 &format!("MOVLW {:#x}", val),
+                                 "MOVWF INDF",
+                                 &format!("MOVWF {:#x}", addr2)].iter().map(|s| s.to_string()).collect(),
+                             regs: vec![ addr, addr2 ] },
                  |hex| assert!(!hex.is_empty())).unwrap();
     }
 }

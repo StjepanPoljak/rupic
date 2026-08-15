@@ -6,16 +6,33 @@ use std::any::Any;
 
 include!("./test.rs");
 
+pub struct GpioGroup {
+    pin_values: usize,
+    io_mask: usize,
+    width: usize,
+    output_pending: bool
+}
+
+pub static mut screen : [[u8; 256]; 64] = [[0u8; 256]; 64];
+
+
 // TODO: needs to be reworked to support larger sizes
 pub trait Bus {
     fn read(&self, addr: u16) -> u8;
     fn write(&mut self, addr: u16, val: u8);
     fn fetch(&self, pc: u16) -> u16;
+
+    fn get_gpio_group(&self, gpio_idx: usize) -> io::Result<&GpioGroup>;
+    fn set_gpio_group(&mut self, gpio_idx: usize, value: usize) -> io::Result<()>;
 }
 
 pub trait Component {
     fn init(&mut self);
     fn step(&mut self) -> u32;
+
+    fn receive_input(&mut self, gpio: &GpioGroup) {}
+    fn output_pending(&self) -> bool { false }
+    fn clear_output_pending(&mut self) { }
 
     fn as_mcu(&self) -> Option<&dyn MCU> { None }
     fn as_mcu_mut(&mut self) -> Option<&mut dyn MCU> { None }
@@ -23,13 +40,30 @@ pub trait Component {
 
 pub struct PIC16F876Bus {
     pub rom: [u16; 0x2000],
-    pub ram: [u8; 512]
+    pub ram: [u8; 512],
+    pub porta: GpioGroup,
+    pub portb: GpioGroup,
+    pub portc: GpioGroup
+}
+
+impl GpioGroup {
+    fn new(width: usize) -> Self {
+        Self { pin_values: 0x0,
+               io_mask: 0x0,
+               width,
+               output_pending: false
+        }
+    }
 }
 
 impl PIC16F876Bus {
     pub fn new() -> Self {
         PIC16F876Bus { rom: [0x3fffu16; 0x2000],
-                       ram: [0u8; 512] }
+                       ram: [0u8; 512],
+                       porta: GpioGroup::new(8),
+                       portb: GpioGroup::new(8),
+                       portc: GpioGroup::new(8)
+        }
     }
 }
 
@@ -100,17 +134,101 @@ impl MCU for PIC16F876 {
     }
 }
 
+static mut portc_count : u8 = 0;
+static mut coord : (usize, usize) = (0, 0);
+
 impl Bus for PIC16F876Bus {
     fn read(&self, addr: u16) -> u8 {
-        self.ram[addr as usize]
+        let mut val = self.ram[addr as usize];
+
+        let read_reg = match addr {
+            val if val == Register::PORTA as u16 => Some(Register::PORTA),
+            val if val == Register::TRISA as u16 => Some(Register::TRISA),
+            val if val == Register::PORTB as u16 => Some(Register::PORTB),
+            val if val == Register::TRISB as u16 => Some(Register::TRISB),
+            val if val == Register::PORTC as u16 => Some(Register::PORTC),
+            val if val == Register::TRISC as u16 => Some(Register::TRISC),
+            _                                    => None
+        };
+
+        if let Some(reg) = read_reg {
+            if reg == Register::PORTC {
+                val |= 0x80; // busy flag emulation
+            }
+        }
+
+        if let Some(reg) = read_reg {
+            if reg != Register::PORTB {
+                println!("Read {:8b} <- {:?} ({:#x})", val, reg, val);
+            }
+        }
+
+        val
     }
 
     fn write(&mut self, addr: u16, val: u8) {
-        self.ram[addr as usize] = val
+        self.ram[addr as usize] = val;
+
+        let write_reg = match addr {
+            val if val == Register::PORTA as u16 => Some(Register::PORTA),
+            val if val == Register::TRISA as u16 => Some(Register::TRISA),
+            val if val == Register::PORTB as u16 => Some(Register::PORTB),
+            val if val == Register::TRISB as u16 => Some(Register::TRISB),
+            val if val == Register::PORTC as u16 => Some(Register::PORTC),
+            val if val == Register::TRISC as u16 => Some(Register::TRISC),
+            _                                    => None
+        };
+        if let Some(reg) = write_reg {
+	    if reg == Register::PORTC {
+
+		unsafe {
+		if val & 0x80 != 0 && portc_count < 2 {
+		    if portc_count == 0 {
+			coord.0 = (val & 0x7f) as usize;
+			portc_count = 1;
+		    } else {
+			coord.1 = ((val & 0x7f) * 4) as usize;
+			println!("POS: {}, {}", *(&raw const coord.0), *(&raw const coord.1));
+			portc_count = 2;
+		    }
+		} else if portc_count == 2 {
+		    println!("DATA1: {:08b}", val);
+		    portc_count = 3;
+		    screen[coord.0][coord.1] = val & 0x1;
+		    screen[coord.0][coord.1 + 1] = val & 0x10;
+		} else if portc_count == 3 {
+		    println!("DATA2: {:08b}", val);
+		    screen[coord.0][coord.1 + 2] = val & 0x1;
+		    screen[coord.0][coord.1 + 3] = val & 0x10;
+		    portc_count = 0;
+		}
+		}
+	    }
+            println!("Write {:8b} -> {:?} ({:#x})", val, reg, val);
+
+        }
     }
 
     fn fetch(&self, pc: u16) -> u16 {
         self.rom[pc as usize]
+    }
+
+    fn get_gpio_group(&self, gpio_idx: usize) -> io::Result<&GpioGroup> {
+        match gpio_idx {
+            0 => Ok(&self.porta),
+            1 => Ok(&self.portb),
+            2 => Ok(&self.portc),
+            _ => Err(io::Error::other(format!("Group with index {gpio_idx} does not exist.")))
+        }
+    }
+
+    fn set_gpio_group(&mut self, gpio_idx: usize, value: usize) -> io::Result<()> {
+        match gpio_idx {
+            0 => Ok(self.porta.pin_values = value),
+            1 => Ok(self.portb.pin_values = value),
+            2 => Ok(self.portc.pin_values = value),
+            _ => Err(io::Error::other(format!("Group with index {gpio_idx} does not exist.")))
+        }
     }
 }
 
@@ -123,6 +241,11 @@ impl PIC16F876Bus {
                 .chunks_exact(2)
                 .map(|c| u16::from_le_bytes ([c[0], c[1]]) & 0x3fff)
                 .collect::<Vec<u16>>();
+
+            if end >= 0x2000 {
+                println!("discarding {:#x}..{:#x} <- len: {}", start, end, bytes16.len());
+                continue;
+            }
             self.rom[start..end].copy_from_slice(&bytes16);
         }
     }
@@ -135,7 +258,8 @@ impl Component for PIC16F876 {
     }
 
     fn step(&mut self) -> u32 {
-        let cycles = self.core.exec_insn(self.bus.fetch(self.core.pc), &mut self.bus).unwrap();
+        let insn = self.bus.fetch(self.core.pc);
+        let cycles = self.core.exec_insn(insn, &mut self.bus).expect(format!("Unknown instruction: {:#x}", insn).as_str());
         self.core.pc += 1;
         cycles as u32
     }
@@ -169,17 +293,73 @@ impl P16 {
         self.pc = self.stack[self.sp as usize];
         Ok(())
     }
-
+/*
     fn get_full_addr(&self, addr: u16, bus: &mut impl Bus) -> u16 {
         ((self.get_pclath(bus) as u16 & 0x18) << 8) | (addr & 0x07ff)
     }
+     */
+    fn get_status_bit(&self, bit: StatusBit, bus: &mut impl Bus) -> bool {
+        self.get_status(bus) & (1 << (bit as u8)) != 0 as u8
+    }
 
+    fn direct_addr(&self, addr: u16, bus: &mut impl Bus) -> u16 {
+        let rp0 = self.get_status_bit(StatusBit::RP0, bus) as u16;
+        let rp1 = self.get_status_bit(StatusBit::RP1, bus) as u16;
+
+        ((rp1 << 1) | rp0) << 7 | (addr as u16 & 0x7F)
+    }
+
+    fn indirect_addr(&self, bus: &mut impl Bus) -> u16 {
+        let irp = self.get_status_bit(StatusBit::IRP, bus) as u16;
+        (irp << 8) | bus.read(Register::FSR as u16) as u16
+    }
+/*
+    fn resolve_addr(&self, addr: u16, bus: &mut impl Bus) -> u16 {
+        let rp0_bit = if self.get_status_bit(StatusBit::RP0, bus) { 1 } else { 0 };
+        let rp1_bit = if self.get_status_bit(StatusBit::RP1, bus) { 2 } else { 0 };
+        let bank = rp0_bit | rp1_bit;
+//      let bank = if rp0_bit { 1 } else { 0 };
+        (bank << 7) | addr
+    }
+*/
     fn get_status(&self, bus: &impl Bus) -> u8 {
         bus.read(Register::STATUS as u16)
     }
 
     fn get_pclath(&self, bus: &mut impl Bus) -> u8 {
         bus.read(Register::PCLATH as u16)
+    }
+
+    fn read_reg(&self, addr: u16, bus: &mut impl Bus) -> u8 {
+        if addr == (Register::INDF as u16) {
+            let real_addr = self.indirect_addr(bus);
+            bus.read(real_addr)
+        } else if addr == (Register::STATUS as u16) {
+            bus.read(addr)
+        } else if addr == (Register::PCL as u16) {
+            (self.pc & 0xff) as u8
+        } else if addr == (Register::FSR as u16) {
+            bus.read(addr)
+        } else {
+            let real_addr = self.direct_addr(addr, bus);
+            bus.read(real_addr)
+        }
+    }
+
+    fn write_reg(&mut self, addr: u16, value: u8, bus: &mut impl Bus) {
+        if addr == (Register::INDF as u16) {
+            let real_addr = self.indirect_addr(bus);
+            bus.write(real_addr, value)
+        } else if addr == (Register::STATUS as u16) {
+            bus.write(addr, value)
+        } else if addr == (Register::PCL as u16) {
+            self.pc = ((self.get_pclath(bus) as u16 & 0x1F) << 8) | value as u16;
+        } else if addr == (Register::FSR as u16) {
+            bus.write(addr, value);
+        } else {
+            let real_addr = self.direct_addr(addr, bus);
+            bus.write(real_addr, value)
+        }
     }
 
     fn update_status_bit(&mut self, bit: StatusBit, val: bool, bus: &mut impl Bus) {
@@ -195,11 +375,11 @@ impl P16 {
     where F: Fn(u16, u16) -> u16 {
         let lsb = (bytes & 0xff) as u8;
         let reg = (lsb as u16) & 0x7F;
-        let res = f(bus.read(reg) as u16, self.w as u16);
-        let ret = (bus.read(reg) as u16, self.w as u16, res);
+        let res = f(self.read_reg(reg, bus) as u16, self.w as u16);
+        let ret = (self.read_reg(reg, bus) as u16, self.w as u16, res);
         match lsb & 0x80 {
             0x00 => { self.w = res as u8; },
-            0x80 => { bus.write(reg, res as u8); },
+            0x80 => { self.write_reg(reg, res as u8, bus); },
             _ => ()
         };
         ret
@@ -268,7 +448,7 @@ impl P16 {
     fn exec_bittest(&mut self, bytes: u16, bus: &mut impl Bus) -> BitStatus {
         let reg = bytes & 0x007F;
         let pos = ((bytes as u16) & 0x0380) >> 7;
-        if bus.read(reg) & (1 << pos) != 0 {
+        if self.read_reg(reg, bus) & (1 << pos) != 0 {
             return BitStatus::Set;
         }
         return BitStatus::Clear;
@@ -278,11 +458,11 @@ impl P16 {
     where F: Fn(u8, u8) -> u8 {
         let reg = bytes & 0x007F;
         let pos = ((bytes as u16) & 0x0380) >> 7;
-        let res = f(bus.read(reg), 1 << pos);
-        bus.write(reg, res as u8);
+        let res = f(self.read_reg(reg, bus), 1 << pos);
+        self.write_reg(reg, res as u8, bus);
     }
 
-    fn exec_zero_insn(&mut self, msb: u8, lsb: u8) -> usize {
+    fn exec_zero_insn(&mut self, msb: u8, lsb: u8, bus: &mut impl Bus) -> usize {
         match lsb {
             0x09 => { /* RETFIE */
                          trace_insn("RETFIE");
@@ -293,6 +473,9 @@ impl P16 {
                          return 2; },
             0x64 => { /* CLRWDT */
                          trace_insn("CLRWDT");
+                         // TODO: should also reset WDT and prescaler
+                         self.update_status_bit(StatusBit::TO, true, bus);
+                         self.update_status_bit(StatusBit::PD, true, bus);
                          return 1; },
             0x63 => { /* SLEEP */
                          trace_insn("SLEEP");
@@ -335,7 +518,8 @@ impl P16 {
                          cycles = self.exec_wf_sz(bytes, |f, _| f + 1, bus); },
             0x04 => { /* IORWF */
                          trace_insn("IORWF");
-                         self.exec_wf_z(bytes, |f, w| f | w, bus); },
+                         self.exec_wf_z(bytes, |f, w| f | w, bus);
+            },
             0x08 => { /* MOVF */
                          trace_insn("MOVF");
                          self.exec_wf_z(bytes, |f, _| f, bus); },
@@ -369,7 +553,7 @@ impl P16 {
                     trace_insn("MOVWF");
                     self.exec_wf(bytes, |_, w| w, bus);
                 } else {
-                    cycles = self.exec_zero_insn(insn as u8, (bytes & 0xff) as u8)
+                    cycles = self.exec_zero_insn(insn as u8, (bytes & 0xff) as u8, bus)
                 } },
             _ => { executed = false; }
         }
@@ -402,19 +586,17 @@ impl P16 {
         }
 
         executed = true;
-        let old_insn = insn & 0xf00;
         insn = insn >> 1;
 
         match insn {
-            0xc => { if old_insn == 0 {
-                     /* MOVLW */
+            0xc => { /* MOVLW */
                         trace_insn("MOVLW");
-                        self.w = (bytes & 0xff) as u8; } else {
-                     /* RETLW */
+                        self.w = (bytes & 0xff) as u8; },
+            0xd => { /* RETLW */
                         trace_insn("RETLW");
                         self.w = (bytes & 0xff) as u8;
                         let _ = self.pop();
-                        cycles = 2; } },
+                        cycles = 2; },
             0x4 => { /* BCF */
                         trace_insn("BCF");
                         self.exec_bitop(bytes, |a, b| a & !b, bus); },
@@ -443,7 +625,8 @@ impl P16 {
         executed = true;
         insn = insn >> 1;
 
-        let addr = self.get_full_addr(bytes, bus);
+        let addr = ((self.get_pclath(bus) as u16 & 0x18) << 8) | (bytes & 0x07ff);
+//        let addr = self.get_full_addr(bytes, bus);
 
         match insn {
             0x4 => { /* CALL */
