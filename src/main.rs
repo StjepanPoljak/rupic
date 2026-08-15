@@ -96,12 +96,59 @@ impl Board {
 	    if SIGINT.swap(false, Ordering::SeqCst) {
 		unsafe {
 		    for (i, row) in (*(&raw const screen)).iter().enumerate() {
-
-		    for (j, val) in row.iter().enumerate() {
-			    print!("{}", if screen[i][j] == 0 { '*' } else { ' ' });
-		    }
+/*			if i % 4 != 0 {
+			    continue;
+			}*/
 			println!("");
-		}
+
+    			for j in (0..64) {
+			    print!("{}", if screen[3 * 4][j * 4] == 0 { '*' } else { ' ' });
+			}
+						println!("");
+    			for j in (0..64) {
+			    print!("{}", if screen[4 * 4][j * 4] == 0 { '*' } else { ' ' });
+			}
+			println!("");
+    			for j in (0..64) {
+			    print!("{}", if screen[5 * 4][j * 4] == 0 { '*' } else { ' ' });
+			}
+			println!("");
+    			for j in (0..64) {
+			    print!("{}", if screen[6 * 4][j * 4] == 0 { '*' } else { ' ' });
+			}
+
+			println!("");
+    			for j in (0..64) {
+			    print!("{}", if screen[7 * 4][j * 4] == 0 { '*' } else { ' ' });
+			}
+
+			println!("");
+			for j in (32..64) {
+			    print!("{}", if screen[0 * 4][j * 4] == 0 { '*' } else { ' ' });
+			}
+			for j in (0..32) {
+			    print!("{}", if screen[0 * 4][j * 4] == 0 { '*' } else { ' ' });
+			}
+			println!("");
+    			for j in (32..64) {
+			    print!("{}", if screen[1 * 4][j * 4] == 0 { '*' } else { ' ' });
+			}
+    			for j in (0..32) {
+			    print!("{}", if screen[1 * 4][j * 4] == 0 { '*' } else { ' ' });
+			}
+
+			println!("");
+			
+    			for j in (32..64) {
+			    print!("{}", if screen[2 * 4][j * 4] == 0 { '*' } else { ' ' });
+			}
+    			for j in (0..32) {
+			    print!("{}", if screen[2 * 4][j * 4] == 0 { '*' } else { ' ' });
+			}
+			println!("");
+
+			break;
+		    }
 		}
 //		std::fs::write("state.txt", "hello").unwrap();
 		break;
