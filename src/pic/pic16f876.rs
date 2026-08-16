@@ -140,14 +140,7 @@ static mut coord : (usize, usize) = (0, 0);
 impl Bus for PIC16F876Bus {
     fn read(&self, addr: u16) -> u8 {
         let mut val = self.ram[addr as usize];
-
-	if addr == 0x2c {
-	    println!("CURR_PT1: {:08b}", val);
-	}
-	else if addr == 0x2d {
-	    println!("BIT_COUNT: {}", val);
-	}
-	
+        
         let read_reg = match addr {
             val if val == Register::PORTA as u16 => Some(Register::PORTA),
             val if val == Register::TRISA as u16 => Some(Register::TRISA),
@@ -164,20 +157,12 @@ impl Bus for PIC16F876Bus {
             }
         }
 
-        if let Some(reg) = read_reg {
-            if reg != Register::PORTB {
-                println!("Read {:8b} <- {:?} ({:#x})", val, reg, val);
-            }
-        }
-
         val
     }
 
     fn write(&mut self, addr: u16, val: u8) {
         self.ram[addr as usize] = val;
-	if addr == 0x60 {
-	    println!("TEMP_PT: {:08b}", val);
-	}
+
         let write_reg = match addr {
             val if val == Register::PORTA as u16 => Some(Register::PORTA),
             val if val == Register::TRISA as u16 => Some(Register::TRISA),
@@ -188,49 +173,40 @@ impl Bus for PIC16F876Bus {
             _                                    => None
         };
         if let Some(reg) = write_reg {
-	    if reg == Register::PORTC {
+            if reg == Register::PORTC { unsafe {
+                if val & 0x80 != 0 && portc_count < 2 {
+                    if portc_count == 0 {
+                        coord.0 = (val & 0x7f) as usize;
+                        portc_count = 1;
+                    } else {
+                        coord.1 = (((val & 0x7f) as usize) * 16) as usize;
+                        portc_count = 2;
+                    }
+                } else if portc_count == 2 {
+                    portc_count = 3;
+                    screen[coord.0][coord.1 + 7] = val & (1 << 0);
+                    screen[coord.0][coord.1 + 6] = val & (1 << 1);
+                    screen[coord.0][coord.1 + 5] = val & (1 << 2);
+                    screen[coord.0][coord.1 + 4] = val & (1 << 3);
+                    screen[coord.0][coord.1 + 3] = val & (1 << 4);
+                    screen[coord.0][coord.1 + 2] = val & (1 << 5);
+                    screen[coord.0][coord.1 + 1] = val & (1 << 6);
+                    screen[coord.0][coord.1 + 0] = val & (1 << 7);
 
-		unsafe {
-		if val & 0x80 != 0 && portc_count < 2 {
-		    if portc_count == 0 {
-			coord.0 = (val & 0x7f) as usize;
-			portc_count = 1;
-		    } else {
-			coord.1 = (((val & 0x7f) as usize) * 16) as usize;
-			println!("POS: {}, {}", *(&raw const coord.0), *(&raw const coord.1));
-			portc_count = 2;
-		    }
-		} else if portc_count == 2 {
-		    println!("DATA1: {:08b}", val);
-		    portc_count = 3;
-    		    screen[coord.0][coord.1 + 7] = val & (1 << 0);
-		    screen[coord.0][coord.1 + 6] = val & (1 << 1);
-    		    screen[coord.0][coord.1 + 5] = val & (1 << 2);
-    		    screen[coord.0][coord.1 + 4] = val & (1 << 3);
-    		    screen[coord.0][coord.1 + 3] = val & (1 << 4);
-    		    screen[coord.0][coord.1 + 2] = val & (1 << 5);
-       		    screen[coord.0][coord.1 + 1] = val & (1 << 6);
-       		    screen[coord.0][coord.1 + 0] = val & (1 << 7);
+                } else if portc_count == 3 {
+                    screen[coord.0][coord.1 + 15] = val & (1 << 0);
+                    screen[coord.0][coord.1 + 14] = val & (1 << 1);
+                    screen[coord.0][coord.1 + 13] = val & (1 << 2);
+                    screen[coord.0][coord.1 + 12] = val & (1 << 3);
+                    screen[coord.0][coord.1 + 11] = val & (1 << 4);
+                    screen[coord.0][coord.1 + 10] = val & (1 << 5);
+                    screen[coord.0][coord.1 + 9] = val & (1 << 6);
+                    screen[coord.0][coord.1 + 8] = val & (1 << 7);
 
-		} else if portc_count == 3 {
-		    println!("DATA2: {:08b}", val);
-		        		    screen[coord.0][coord.1 + 15] = val & (1 << 0);
-		    screen[coord.0][coord.1 + 14] = val & (1 << 1);
-    		    screen[coord.0][coord.1 + 13] = val & (1 << 2);
-    		    screen[coord.0][coord.1 + 12] = val & (1 << 3);
-    		    screen[coord.0][coord.1 + 11] = val & (1 << 4);
-    		    screen[coord.0][coord.1 + 10] = val & (1 << 5);
-       		    screen[coord.0][coord.1 + 9] = val & (1 << 6);
-       		    screen[coord.0][coord.1 + 8] = val & (1 << 7);
+                    portc_count = 0;
 
-
-		    portc_count = 0;
-
-		}
-		}
-	    }
-            println!("Write {:8b} -> {:?} ({:#x})", val, reg, val);
-
+                }}
+            }
         }
     }
 
