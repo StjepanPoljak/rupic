@@ -1,14 +1,42 @@
 use std::fs::File;
-use std::io::{ self, Read };
-use std::range::Range;
+use std::io::{ self };
 
 mod pic;
 mod common;
 
-use crate::pic::pic16f876::{Bus, Component, MCU, screen};
+use crate::pic::pic16f876::{MCU, SCREEN};
 use crate::pic::pic16f876::PIC16F876Bus;
 use crate::pic::pic16f876::PIC16F876;
 use crate::common::byte_data::*;
+
+
+pub struct GpioGroup {
+    pin_values: usize,
+    io_mask: usize,
+    width: usize,
+    output_pending: bool
+}
+// TODO: needs to be reworked to support larger sizes
+pub trait Bus {
+    fn read(&self, addr: u16) -> u8;
+    fn write(&mut self, addr: u16, val: u8);
+    fn fetch(&self, pc: u16) -> u16;
+
+    fn get_gpio_group(&self, gpio_idx: usize) -> io::Result<&GpioGroup>;
+    fn set_gpio_group(&mut self, gpio_idx: usize, value: usize) -> io::Result<()>;
+}
+
+pub trait Component {
+    fn init(&mut self);
+    fn step(&mut self) -> u32;
+
+    fn receive_input(&mut self, gpio: &GpioGroup) {}
+    fn output_pending(&self) -> bool { false }
+    fn clear_output_pending(&mut self) { }
+
+    fn as_mcu(&self) -> Option<&dyn MCU> { None }
+    fn as_mcu_mut(&mut self) -> Option<&mut dyn MCU> { None }
+}
 
 pub struct Breakpoint {
     addr: usize
@@ -47,8 +75,8 @@ pub unsafe fn install_interrupt_signal() {
 
 fn print_screen() {
     for i in (0..=9).map(|x| 4 * (3 + x)) {
-        for j in if i <= (4 * (3 + 4)) { (0..32) } else { (32..64) } {
-            print!("{}", if unsafe { screen[i % 32][j * 4] } == 0 { '\u{2588}' } else { '\u{0020}' });
+        for j in if i <= (4 * (3 + 4)) { 0..32 } else { 32..64 } {
+            print!("{}", if unsafe { SCREEN[i % 32][j * 4] } == 0 { '\u{2588}' } else { '\u{0020}' });
         }
         println!("");
     }

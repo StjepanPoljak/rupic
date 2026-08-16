@@ -2,40 +2,18 @@ use crate::pic::regs::*;
 use crate::common::common::*;
 use std::io::{self};
 use crate::common::byte_data::*;
-use std::any::Any;
+use crate::{ Bus, Component, GpioGroup };
 
 include!("./test.rs");
 
-pub struct GpioGroup {
-    pin_values: usize,
-    io_mask: usize,
-    width: usize,
-    output_pending: bool
-}
+pub static mut SCREEN : [[u8; 256]; 64] = [[0u8; 256]; 64];
+static mut PORTC_COUNT : u8 = 0;
+static mut COORD : (usize, usize) = (0, 0);
 
-pub static mut screen : [[u8; 256]; 64] = [[0u8; 256]; 64];
-
-
-// TODO: needs to be reworked to support larger sizes
-pub trait Bus {
-    fn read(&self, addr: u16) -> u8;
-    fn write(&mut self, addr: u16, val: u8);
-    fn fetch(&self, pc: u16) -> u16;
-
-    fn get_gpio_group(&self, gpio_idx: usize) -> io::Result<&GpioGroup>;
-    fn set_gpio_group(&mut self, gpio_idx: usize, value: usize) -> io::Result<()>;
-}
-
-pub trait Component {
-    fn init(&mut self);
-    fn step(&mut self) -> u32;
-
-    fn receive_input(&mut self, gpio: &GpioGroup) {}
-    fn output_pending(&self) -> bool { false }
-    fn clear_output_pending(&mut self) { }
-
-    fn as_mcu(&self) -> Option<&dyn MCU> { None }
-    fn as_mcu_mut(&mut self) -> Option<&mut dyn MCU> { None }
+fn byte_to_array(byte: u8, array: &mut [u8]) {
+    for i in 0..=7 {
+        array[7 - i] = byte & (1 << i);
+    }
 }
 
 pub struct PIC16F876Bus {
@@ -134,9 +112,6 @@ impl MCU for PIC16F876 {
     }
 }
 
-static mut portc_count : u8 = 0;
-static mut coord : (usize, usize) = (0, 0);
-
 impl Bus for PIC16F876Bus {
     fn read(&self, addr: u16) -> u8 {
         let mut val = self.ram[addr as usize];
@@ -174,37 +149,20 @@ impl Bus for PIC16F876Bus {
         };
         if let Some(reg) = write_reg {
             if reg == Register::PORTC { unsafe {
-                if val & 0x80 != 0 && portc_count < 2 {
-                    if portc_count == 0 {
-                        coord.0 = (val & 0x7f) as usize;
-                        portc_count = 1;
+                if val & 0x80 != 0 && PORTC_COUNT < 2 {
+                    if PORTC_COUNT == 0 {
+                        COORD.0 = (val & 0x7f) as usize;
+                        PORTC_COUNT = 1;
                     } else {
-                        coord.1 = (((val & 0x7f) as usize) * 16) as usize;
-                        portc_count = 2;
+                        COORD.1 = (((val & 0x7f) as usize) * 16) as usize;
+                        PORTC_COUNT = 2;
                     }
-                } else if portc_count == 2 {
-                    portc_count = 3;
-                    screen[coord.0][coord.1 + 7] = val & (1 << 0);
-                    screen[coord.0][coord.1 + 6] = val & (1 << 1);
-                    screen[coord.0][coord.1 + 5] = val & (1 << 2);
-                    screen[coord.0][coord.1 + 4] = val & (1 << 3);
-                    screen[coord.0][coord.1 + 3] = val & (1 << 4);
-                    screen[coord.0][coord.1 + 2] = val & (1 << 5);
-                    screen[coord.0][coord.1 + 1] = val & (1 << 6);
-                    screen[coord.0][coord.1 + 0] = val & (1 << 7);
-
-                } else if portc_count == 3 {
-                    screen[coord.0][coord.1 + 15] = val & (1 << 0);
-                    screen[coord.0][coord.1 + 14] = val & (1 << 1);
-                    screen[coord.0][coord.1 + 13] = val & (1 << 2);
-                    screen[coord.0][coord.1 + 12] = val & (1 << 3);
-                    screen[coord.0][coord.1 + 11] = val & (1 << 4);
-                    screen[coord.0][coord.1 + 10] = val & (1 << 5);
-                    screen[coord.0][coord.1 + 9] = val & (1 << 6);
-                    screen[coord.0][coord.1 + 8] = val & (1 << 7);
-
-                    portc_count = 0;
-
+                } else if PORTC_COUNT == 2 {
+                    byte_to_array(val, &mut SCREEN[COORD.0][COORD.1..=(COORD.1 + 7)]);
+                    PORTC_COUNT = 3;
+                } else if PORTC_COUNT == 3 {
+                    byte_to_array(val, &mut SCREEN[COORD.0][(COORD.1 + 8)..=(COORD.1 + 15)]);
+                    PORTC_COUNT = 0;
                 }}
             }
         }
