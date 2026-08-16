@@ -45,11 +45,9 @@ pub unsafe fn install_interrupt_signal() {
     libc::sigaction(libc::SIGINT, &sa, std::ptr::null_mut());
 }
 
-fn print_block<I>(range: I, block_no: u8)
-where
-    I: Iterator<Item = usize> {
-    for i in range.map(|x| 4 * (3 + x)) {
-        for j in if block_no == 0 { (0..32) } else { (32..64) } {
+fn print_screen() {
+    for i in (0..=9).map(|x| 4 * (3 + x)) {
+        for j in if i <= (4 * (3 + 4)) { (0..32) } else { (32..64) } {
             print!("{}", if unsafe { screen[i % 32][j * 4] } == 0 { '\u{2588}' } else { '\u{0020}' });
         }
         println!("");
@@ -108,8 +106,7 @@ impl Board {
         loop {
             if SIGINT.swap(false, Ordering::SeqCst) {
                 println!("");
-                print_block((0..=4), 0);
-                print_block((5..=9), 1);
+                print_screen();
                 break;
             }
 
