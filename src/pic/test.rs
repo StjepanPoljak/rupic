@@ -1,5 +1,9 @@
 use std::collections::HashMap;
-use crate::Board;
+use crate::{Board, ByteData};
+use std::io::{ self };
+use crate::pic::pic16f876::{MCU, SCREEN};
+use crate::pic::pic16f876::PIC16F876Bus;
+use crate::pic::pic16f876::PIC16F876;
 
 const TESTS_PER_INSN : usize = 25;
 
@@ -217,7 +221,7 @@ fn test_f(insn: &str) {
         run_test(&TestCase { name: insn.to_string(),
                              source: get_f_src(insn, val, addr),
                              regs: vec![ addr ] },
-                 |hex| assert!(!hex.is_empty()));
+                 |hex| assert!(!hex.is_empty())).unwrap();
     }
 }
 

@@ -1,10 +1,16 @@
+use std::collections::HashMap;
 use crate::pic::regs::*;
 use crate::common::common::*;
 use std::io::{self};
 use crate::common::byte_data::*;
-use crate::{ Bus, Component, GpioGroup };
+use crate::common::bus::{ Bus, GpioGroup, BusError };
+use crate::common::component::{ Component };
+use crate::common::mcu::{ MCU, RegDump, MemDump };
 
-include!("./test.rs");
+#[cfg(test)]
+mod tests {
+    include!("test.rs");
+}
 
 pub static mut SCREEN : [[u8; 256]; 64] = [[0u8; 256]; 64];
 static mut PORTC_COUNT : u8 = 0;
@@ -27,7 +33,6 @@ pub struct PIC16F876Bus {
 impl GpioGroup {
     fn new(width: usize) -> Self {
         Self { pin_values: 0x0,
-               io_mask: 0x0,
                width,
                output_pending: false
         }
@@ -63,27 +68,10 @@ pub struct P16 {
     sp: u8
 }
 
-pub struct RegDump {
-    value: usize,
-    bit_width: usize
-}
-
-pub struct MemDump {
-    values: Vec<usize>,
-    bit_width: usize
-}
-
 impl MemDump {
     fn get_val(&self, idx: usize) -> usize {
         self.values[idx]
     }
-}
-
-pub trait MCU {
-    fn load_rom(&mut self, byte_data: &ByteData);
-    fn pc(&self) -> usize;
-    fn dump_mem(&self, addr: usize, item_count: usize) -> Option<MemDump> { None }
-    fn dump_regs(&self) -> Option<HashMap<&str, RegDump>> { None }
 }
 
 impl MCU for PIC16F876 {
@@ -147,8 +135,13 @@ impl Bus for PIC16F876Bus {
             val if val == Register::TRISC as u16 => Some(Register::TRISC),
             _                                    => None
         };
+
         if let Some(reg) = write_reg {
-            if reg == Register::PORTC { unsafe {
+            if reg == Register::PORTC {
+		self.portc.pin_values = val as usize;
+		self.portc.output_pending = true;
+
+		unsafe {
                 if val & 0x80 != 0 && PORTC_COUNT < 2 {
                     if PORTC_COUNT == 0 {
                         COORD.0 = (val & 0x7f) as usize;
@@ -172,21 +165,21 @@ impl Bus for PIC16F876Bus {
         self.rom[pc as usize]
     }
 
-    fn get_gpio_group(&self, gpio_idx: usize) -> io::Result<&GpioGroup> {
+    fn get_gpio_group(&self, gpio_idx: usize) -> Result<&GpioGroup, BusError> {
         match gpio_idx {
             0 => Ok(&self.porta),
             1 => Ok(&self.portb),
             2 => Ok(&self.portc),
-            _ => Err(io::Error::other(format!("Group with index {gpio_idx} does not exist.")))
+            _ => Err(BusError::InvalidGpioGroup)
         }
     }
 
-    fn set_gpio_group(&mut self, gpio_idx: usize, value: usize) -> io::Result<()> {
+    fn set_gpio_group(&mut self, gpio_idx: usize, value: usize) -> Result<(), BusError> {
         match gpio_idx {
             0 => Ok(self.porta.pin_values = value),
             1 => Ok(self.portb.pin_values = value),
             2 => Ok(self.portc.pin_values = value),
-            _ => Err(io::Error::other(format!("Group with index {gpio_idx} does not exist.")))
+            _ => Err(BusError::InvalidGpioGroup)
         }
     }
 }
@@ -223,6 +216,20 @@ impl Component for PIC16F876 {
         cycles as u32
     }
 
+    fn output_pending(&self) -> bool {
+	self.bus.porta.output_pending || self.bus.portb.output_pending || self.bus.portc.output_pending
+    }
+
+    fn clear_output_pending(&mut self) -> () {
+	self.bus.porta.output_pending = false;
+	self.bus.portb.output_pending = false;
+	self.bus.portc.output_pending = false;
+    }
+
+    fn get_gpio_values(&self, gpio_idx: usize) -> Result<usize, BusError> {
+	Ok(self.bus.get_gpio_group(gpio_idx)?.pin_values)
+    }
+
     fn as_mcu(&self) -> Option<&dyn MCU> { Some(self) }
     fn as_mcu_mut(&mut self) -> Option<&mut dyn MCU> { Some(self) }
 }
@@ -252,11 +259,7 @@ impl P16 {
         self.pc = self.stack[self.sp as usize];
         Ok(())
     }
-/*
-    fn get_full_addr(&self, addr: u16, bus: &mut impl Bus) -> u16 {
-        ((self.get_pclath(bus) as u16 & 0x18) << 8) | (addr & 0x07ff)
-    }
-     */
+
     fn get_status_bit(&self, bit: StatusBit, bus: &mut impl Bus) -> bool {
         self.get_status(bus) & (1 << (bit as u8)) != 0 as u8
     }
@@ -272,15 +275,7 @@ impl P16 {
         let irp = self.get_status_bit(StatusBit::IRP, bus) as u16;
         (irp << 8) | bus.read(Register::FSR as u16) as u16
     }
-/*
-    fn resolve_addr(&self, addr: u16, bus: &mut impl Bus) -> u16 {
-        let rp0_bit = if self.get_status_bit(StatusBit::RP0, bus) { 1 } else { 0 };
-        let rp1_bit = if self.get_status_bit(StatusBit::RP1, bus) { 2 } else { 0 };
-        let bank = rp0_bit | rp1_bit;
-//      let bank = if rp0_bit { 1 } else { 0 };
-        (bank << 7) | addr
-    }
-*/
+
     fn get_status(&self, bus: &impl Bus) -> u8 {
         bus.read(Register::STATUS as u16)
     }
@@ -585,7 +580,6 @@ impl P16 {
         insn = insn >> 1;
 
         let addr = ((self.get_pclath(bus) as u16 & 0x18) << 8) | (bytes & 0x07ff);
-//        let addr = self.get_full_addr(bytes, bus);
 
         match insn {
             0x4 => { /* CALL */

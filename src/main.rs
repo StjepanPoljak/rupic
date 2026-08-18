@@ -1,42 +1,36 @@
 use std::fs::File;
 use std::io::{ self };
+use std::fmt;
+use std::error::Error;
 
 mod pic;
 mod common;
+mod hw;
 
-use crate::pic::pic16f876::{MCU, SCREEN};
+use crate::pic::pic16f876::{ SCREEN };
 use crate::pic::pic16f876::PIC16F876Bus;
 use crate::pic::pic16f876::PIC16F876;
-use crate::common::byte_data::*;
+use crate::hw::st7920::ST7920;
+use crate::common::byte_data::ByteData;
+use crate::common::component::Component;
+use crate::common::bus::{ Bus, GpioGroup };
+use crate::common::mcu::{ MCU };
 
 
-pub struct GpioGroup {
-    pin_values: usize,
-    io_mask: usize,
-    width: usize,
-    output_pending: bool
-}
-// TODO: needs to be reworked to support larger sizes
-pub trait Bus {
-    fn read(&self, addr: u16) -> u8;
-    fn write(&mut self, addr: u16, val: u8);
-    fn fetch(&self, pc: u16) -> u16;
-
-    fn get_gpio_group(&self, gpio_idx: usize) -> io::Result<&GpioGroup>;
-    fn set_gpio_group(&mut self, gpio_idx: usize, value: usize) -> io::Result<()>;
+#[derive(Debug)]
+pub enum BoardError {
+    ComponentNotFound
 }
 
-pub trait Component {
-    fn init(&mut self);
-    fn step(&mut self) -> u32;
-
-    fn receive_input(&mut self, gpio: &GpioGroup) {}
-    fn output_pending(&self) -> bool { false }
-    fn clear_output_pending(&mut self) { }
-
-    fn as_mcu(&self) -> Option<&dyn MCU> { None }
-    fn as_mcu_mut(&mut self) -> Option<&mut dyn MCU> { None }
+impl fmt::Display for BoardError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ComponentNotFound => write!(f, "Component not found.")
+        }
+    }
 }
+
+impl std::error::Error for BoardError {}
 
 pub struct Breakpoint {
     addr: usize
@@ -93,7 +87,7 @@ impl Board {
     }
 
     fn add_breakpoint(&mut self, bc_idx: usize, addr: usize) -> (usize, usize) {
-        let mut bc = &mut self.components[bc_idx];
+        let bc = &mut self.components[bc_idx];
         bc.breakpoints.push(Breakpoint{ addr });
         (bc_idx, bc.breakpoints.len() - 1)
     }
@@ -103,7 +97,7 @@ impl Board {
     }
 
     fn subscribe(&mut self, bc_idx: usize, out_bc_idx: usize, gpio_idx: Vec<usize>) {
-        let mut out_bc = &mut self.components[out_bc_idx];
+        let out_bc = &mut self.components[out_bc_idx];
         out_bc.subscribers.push(Subscriber{ bc_idx, gpio_idx });
     }
 
@@ -114,21 +108,36 @@ impl Board {
 
     fn step(&mut self) -> bool {
         let mut got_bp = false;
-        for (bc_idx, bc) in self.components.iter_mut().enumerate() {
+        for bc_idx in 0..self.components.len() {
+            let bc = &self.components[bc_idx];
             if let Some(mcu) = bc.component.as_mcu() {
                 let mcu_pc = mcu.pc();
-                for bp in &bc.breakpoints {
-                    if mcu_pc == bp.addr {
-                        got_bp = true;
-                    }
+                if bc.breakpoints.iter().any(|bp| bp.addr == mcu_pc) {
+                    got_bp = true;
                 }
             }
-            let _ = bc.component.step();
-        }
+            self.components[bc_idx].component.step();
 
-        return got_bp;
+            let bc = &self.components[bc_idx];
+            if bc.component.output_pending() {
+                let deliveries: Vec<_> = bc.subscribers
+                    .iter().flat_map(|sub| sub.gpio_idx.iter().map(|&gpio_idx| {
+                        let values = bc.component
+                            .get_gpio_values(gpio_idx)
+                            .expect("Gpio group not found.");
+                        (sub.bc_idx, gpio_idx, values)})).collect();
+
+                for (target_idx, gpio_idx, values) in deliveries {
+                    self.components[target_idx].component.receive_input(gpio_idx, values);
+                }
+            }
+
+            let bc = &mut self.components[bc_idx];
+            bc.component.clear_output_pending();
+        }
+        got_bp
     }
-    
+
     fn run(&mut self) {
         println!("Press CTRL+C to get screen printout and exit.");
         loop {
@@ -148,12 +157,19 @@ impl Board {
 
 fn main() -> io::Result<()> {
     let mut board = Board::new();
-    unsafe { install_interrupt_signal() };
+
     let mut pic: PIC16F876 = PIC16F876::new();
     pic.load_rom(&ByteData::new_from_intel_hex("./TETRIS.hex")?);
     let pic_idx = board.add_component(Box::new(pic));
+
+    let mut display: ST7920 = ST7920::new();
+    let display_idx = board.add_component(Box::new(display));
+
+    board.subscribe(display_idx, pic_idx, vec![2]);
 //    board.add_breakpoint(pic_idx, 0x5);
     board.init_components();
+
+    unsafe { install_interrupt_signal() };
     board.run();
 
     Ok(())

@@ -1,6 +1,6 @@
-#[allow(non_camel_case_types)]
+#[allow(non_camel_case_types, unused)]
 #[repr(u16)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Register {
     INDF = 0x00,
     TMR0 = 0x01,
