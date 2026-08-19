@@ -138,10 +138,10 @@ impl Bus for PIC16F876Bus {
 
         if let Some(reg) = write_reg {
             if reg == Register::PORTC {
-		self.portc.pin_values = val as usize;
-		self.portc.output_pending = true;
+                self.portc.pin_values = val as usize;
+                self.portc.output_pending = true;
 
-		unsafe {
+                unsafe {
                 if val & 0x80 != 0 && PORTC_COUNT < 2 {
                     if PORTC_COUNT == 0 {
                         COORD.0 = (val & 0x7f) as usize;
@@ -217,17 +217,17 @@ impl Component for PIC16F876 {
     }
 
     fn output_pending(&self) -> bool {
-	self.bus.porta.output_pending || self.bus.portb.output_pending || self.bus.portc.output_pending
+        self.bus.porta.output_pending || self.bus.portb.output_pending || self.bus.portc.output_pending
     }
 
     fn clear_output_pending(&mut self) -> () {
-	self.bus.porta.output_pending = false;
-	self.bus.portb.output_pending = false;
-	self.bus.portc.output_pending = false;
+        self.bus.porta.output_pending = false;
+        self.bus.portb.output_pending = false;
+        self.bus.portc.output_pending = false;
     }
 
     fn get_gpio_values(&self, gpio_idx: usize) -> Result<usize, BusError> {
-	Ok(self.bus.get_gpio_group(gpio_idx)?.pin_values)
+        Ok(self.bus.get_gpio_group(gpio_idx)?.pin_values)
     }
 
     fn as_mcu(&self) -> Option<&dyn MCU> { Some(self) }

@@ -2,6 +2,9 @@ use std::fs::File;
 use std::io::{ self };
 use std::fmt;
 use std::error::Error;
+use std::sync::atomic::{ Ordering, AtomicU64, AtomicBool };
+
+static SIGINT: AtomicBool = AtomicBool::new(false);
 
 mod pic;
 mod common;
@@ -16,6 +19,7 @@ use crate::common::component::Component;
 use crate::common::bus::{ Bus, GpioGroup };
 use crate::common::mcu::{ MCU };
 
+static MAIN_TID: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
 pub enum BoardError {
@@ -51,9 +55,6 @@ pub struct Board {
     components: Vec<BoardComponent>
 }
 
-use std::sync::atomic::{AtomicBool, Ordering};
-
-static SIGINT: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn handler(_sig: libc::c_int) {
     SIGINT.store(true, Ordering::SeqCst);
@@ -139,11 +140,9 @@ impl Board {
     }
 
     fn run(&mut self) {
-        println!("Press CTRL+C to get screen printout and exit.");
+
         loop {
-            if SIGINT.swap(false, Ordering::SeqCst) {
-                println!("");
-                print_screen();
+            if SIGINT.load(Ordering::Relaxed) {
                 break;
             }
 
@@ -156,7 +155,10 @@ impl Board {
 }
 
 fn main() -> io::Result<()> {
+
     let mut board = Board::new();
+
+    MAIN_TID.store(unsafe { libc::pthread_self() } as u64, Ordering::SeqCst);
 
     let mut pic: PIC16F876 = PIC16F876::new();
     pic.load_rom(&ByteData::new_from_intel_hex("./TETRIS.hex")?);
