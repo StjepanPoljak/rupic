@@ -1,6 +1,4 @@
-use std::io::{ self };
 use std::fmt;
-use std::error::Error;
 
 #[derive(Debug)]
 pub enum BusError {
@@ -12,7 +10,7 @@ impl fmt::Display for BusError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidGpioGroup => write!(f, "Invalid GpioGroup."),
-	    Self::NotImplemented => write!(f, "Method not implemented.")
+            Self::NotImplemented => write!(f, "Method not implemented.")
         }
     }
 }

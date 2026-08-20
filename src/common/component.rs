@@ -1,5 +1,6 @@
 use crate::common::mcu::{ MCU };
-use crate::common::bus::{ GpioGroup, BusError };
+use crate::Display;
+use crate::common::bus::{ BusError };
 
 pub trait Component {
     fn init(&mut self);
@@ -12,4 +13,7 @@ pub trait Component {
 
     fn as_mcu(&self) -> Option<&dyn MCU> { None }
     fn as_mcu_mut(&mut self) -> Option<&mut dyn MCU> { None }
+
+    fn as_display(&self) -> Option<&dyn Display> { None }
+    fn as_display_mut(&mut self) -> Option<&mut dyn Display> { None }
 }

@@ -1,8 +1,7 @@
-use std::fs::File;
 use std::io::{ self };
 use std::fmt;
-use std::error::Error;
 use std::sync::atomic::{ Ordering, AtomicU64, AtomicBool };
+use std::sync::mpsc::Receiver;
 
 static SIGINT: AtomicBool = AtomicBool::new(false);
 
@@ -10,16 +9,18 @@ mod pic;
 mod common;
 mod hw;
 
-use crate::pic::pic16f876::{ SCREEN };
-use crate::pic::pic16f876::PIC16F876Bus;
 use crate::pic::pic16f876::PIC16F876;
 use crate::hw::st7920::ST7920;
 use crate::common::byte_data::ByteData;
 use crate::common::component::Component;
-use crate::common::bus::{ Bus, GpioGroup };
-use crate::common::mcu::{ MCU };
+use crate::common::mcu::MCU;
+use crate::common::term::{ init_term, draw, KeyEvent };
 
 static MAIN_TID: AtomicU64 = AtomicU64::new(0);
+
+pub trait Display {
+    fn redraw(&mut self, draw: fn(u16, u16, bool));
+}
 
 #[derive(Debug)]
 pub enum BoardError {
@@ -52,9 +53,10 @@ pub struct BoardComponent {
 }
 
 pub struct Board {
-    components: Vec<BoardComponent>
+    components: Vec<BoardComponent>,
+    needs_term: bool,
+    term_rx: Option<Receiver<KeyEvent>>
 }
-
 
 extern "C" fn handler(_sig: libc::c_int) {
     SIGINT.store(true, Ordering::SeqCst);
@@ -68,21 +70,15 @@ pub unsafe fn install_interrupt_signal() {
     libc::sigaction(libc::SIGINT, &sa, std::ptr::null_mut());
 }
 
-fn print_screen() {
-    for i in (0..=9).map(|x| 4 * (3 + x)) {
-        for j in if i <= (4 * (3 + 4)) { 0..32 } else { 32..64 } {
-            print!("{}", if unsafe { SCREEN[i % 32][j * 4] } == 0 { '\u{2588}' } else { '\u{0020}' });
-        }
-        println!("");
-    }
-}
-
 impl Board {
     fn new() -> Self {
-        Self { components: vec![] }
+        Self { components: vec![], needs_term: false, term_rx: None }
     }
 
     fn add_component(&mut self, component: Box<dyn Component>) -> usize {
+        if let Some(_) = component.as_display() {
+            self.needs_term = true;
+        }
         self.components.push(BoardComponent { component, breakpoints: vec![], subscribers: vec![] });
         self.components.len() - 1
     }
@@ -93,8 +89,11 @@ impl Board {
         (bc_idx, bc.breakpoints.len() - 1)
     }
 
-    fn init_components(&mut self) {
+    fn init(&mut self) {
         self.components.iter_mut().for_each(|bc| bc.component.init());
+        if self.needs_term {
+            self.term_rx = Some(init_term(unsafe { libc::pthread_self() }));
+        }
     }
 
     fn subscribe(&mut self, bc_idx: usize, out_bc_idx: usize, gpio_idx: Vec<usize>) {
@@ -108,6 +107,13 @@ impl Board {
     }
 
     fn step(&mut self) -> bool {
+        let mut events = vec![];
+        if let Some(rx) = &self.term_rx {
+            while let Ok(event) = rx.try_recv() {
+                events.push(event);
+            }
+        }
+
         let mut got_bp = false;
         for bc_idx in 0..self.components.len() {
             let bc = &self.components[bc_idx];
@@ -118,6 +124,11 @@ impl Board {
                 }
             }
             self.components[bc_idx].component.step();
+
+            let bc = &mut self.components[bc_idx];
+            if let Some(display) = bc.component.as_display_mut() {
+                display.redraw(draw);
+            }
 
             let bc = &self.components[bc_idx];
             if bc.component.output_pending() {
@@ -158,18 +169,15 @@ fn main() -> io::Result<()> {
 
     let mut board = Board::new();
 
-    MAIN_TID.store(unsafe { libc::pthread_self() } as u64, Ordering::SeqCst);
-
     let mut pic: PIC16F876 = PIC16F876::new();
     pic.load_rom(&ByteData::new_from_intel_hex("./TETRIS.hex")?);
     let pic_idx = board.add_component(Box::new(pic));
 
-    let mut display: ST7920 = ST7920::new();
+    let display: ST7920 = ST7920::new();
     let display_idx = board.add_component(Box::new(display));
-
+    
     board.subscribe(display_idx, pic_idx, vec![2]);
-//    board.add_breakpoint(pic_idx, 0x5);
-    board.init_components();
+    board.init();
 
     unsafe { install_interrupt_signal() };
     board.run();

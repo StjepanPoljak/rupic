@@ -1,57 +1,17 @@
-use crate::common::component::Component;
-use crate::common::bus::{ Bus, GpioGroup };
-use crate::{ MAIN_TID };
-use std::io::{ self };
+use crate::{ Display, Component };
 use crate::common::byte_data::ByteData;
-use std::io::{ stdin, stdout, Read, Write };
-use termion::raw::IntoRawMode;
-use termion::{ cursor, clear, terminal_size };
-use std::sync::atomic::{ Ordering, AtomicU64 };
+use termion::{ terminal_size };
 
-fn clear() {
-    stdout().write_all(format!("{}", clear::All).as_bytes());
-    stdout().flush().unwrap();
-}
-
-fn cursor_hide() {
-    stdout().write_all(format!("{}", cursor::Hide).as_bytes());
-    stdout().flush().unwrap();
-}
-
-fn cursor_show() {
-    stdout().write_all(format!("{}", cursor::Show).as_bytes());
-    stdout().flush().unwrap();
-}
-
-fn draw_raw(x: u16, y: u16, c: char) {
-    stdout()
-        .write_all(format!("{}{}", cursor::Goto(x + 1, y + 1), c).as_bytes())
-        .unwrap();
-    stdout().flush().unwrap();
-}
-
-fn draw(ha: u16, va: u16, c: char) {
-    let (width, height) = terminal_size().unwrap();
-
-    if ha / 4 > 32 {
-        if va < 8 {
-            draw_raw((ha / 4 - 32) as u16, (va + 8) as u16, c);
-        }
-    } else {
-        draw_raw((ha / 4) as u16, va as u16, c);
-    }
-}
-
-fn draw_rot(ha: u16, va: u16, c: char) {
+fn draw_rot(ha: u16, va: u16, state: bool, draw_raw: fn(u16, u16, bool)) {
     let (width, height) = terminal_size().unwrap();
     let (w_pos, h_pos) = (width / 2 - 8, height / 2 - 16);
 
     if ha / 4 > 32 {
         if va < 8 {
-            draw_raw(w_pos + (va + 8) as u16, h_pos + 32 - ((ha / 4) - 32) as u16, c);
+            draw_raw(w_pos + (va + 8) as u16, h_pos + 32 - ((ha / 4) - 32) as u16, state);
         }
     } else if ha / 4 < 64 {
-        draw_raw(w_pos + va as u16, h_pos + 32 - (ha / 4) as u16, c);
+        draw_raw(w_pos + va as u16, h_pos + 32 - (ha / 4) as u16, state);
     }
 }
 
@@ -84,14 +44,16 @@ struct Coordinate {
 pub struct ST7920 {
     pub screen: [[u8; 256]; 64],
     pub state: ST7920DataState,
-    pub coord: Coordinate
+    pub coord: Coordinate,
+    need_redraw: bool
 }
 
 impl ST7920 {
     pub fn new() -> Self {
         Self { screen: [[0u8; 256]; 64],
                state: ST7920DataState::VerticalAddress,
-               coord: Coordinate { VA: 0, HA: 0 } }
+               coord: Coordinate { VA: 0, HA: 0 },
+               need_redraw: false }
     }
 
     fn print_screen(&self) {
@@ -104,45 +66,21 @@ impl ST7920 {
     }
 }
 
+impl Display for ST7920 {
+    fn redraw(&mut self, draw: fn(u16, u16, bool)) {
+        if !self.need_redraw {
+            return;
+        }
+        for ha in (self.coord.HA..=self.coord.HA + 15).step_by(4) {
+            draw_rot(ha as u16, (self.coord.VA / 4) as u16, self.screen[self.coord.VA][ha] != 0, draw);
+        }
+        self.need_redraw = false;
+    }
+}
 
 impl Component for ST7920 {
 
-    fn init(&mut self) {
-
-//        println!("Press CTRL+A x to exit.");
-//      let (width, height) = terminal_size().unwrap();
-
-//      println!("width: {}, height: {}", width, height);
-        clear();
-        cursor_hide();
-
-        std::thread::spawn(move || {
-            let mut is_escape = false;
-            let raw = stdout().into_raw_mode().unwrap();
-            const QUIT_BYTE : u8 = 'x' as u8;
-
-            for byte in stdin().bytes() {
-                let b = byte.unwrap();
-
-                if !is_escape && b == 0x01 {
-                    is_escape = true;
-                    continue;
-                } else if is_escape {
-                    is_escape = false;
-                    match b {
-                        QUIT_BYTE => { break; },
-                        0x01 => (),
-                        _ => { continue; }
-                    };
-                }
-            }
-            cursor_show();
-            drop(raw);
-            let tid = MAIN_TID.load(Ordering::SeqCst) as libc::pthread_t;
-            unsafe { libc::pthread_kill(tid, libc::SIGINT); }
-        });
-
-    }
+    fn init(&mut self) { }
 
     fn step(&mut self) -> u32 { 0 }
 
@@ -160,18 +98,15 @@ impl Component for ST7920 {
             self.state = ST7920DataState::DataPart2;
         } else if self.state == ST7920DataState::DataPart2 {
             byte_to_array(pin_values as u8, &mut self.screen[self.coord.VA][(self.coord.HA + 8)..=(self.coord.HA + 15)]);
-            for ha in (self.coord.HA..=self.coord.HA + 15).step_by(4) {
-                if self.screen[self.coord.VA][ha] != 0 {
-                    draw_rot(ha as u16, (self.coord.VA / 4) as u16, '\u{0020}');
-                } else {
-                    draw_rot(ha as u16, (self.coord.VA / 4) as u16, '\u{2588}');
-                }
-
-            }
             self.state = ST7920DataState::VerticalAddress;
+            self.need_redraw = true;
         }
     }
 
     fn output_pending(&self) -> bool { false }
     fn clear_output_pending(&mut self) { }
+
+    fn as_display(&self) -> Option<&dyn Display> { Some(self) }
+    fn as_display_mut(&mut self) -> Option<&mut dyn Display> { Some(self) }
+
 }
