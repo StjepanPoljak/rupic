@@ -1,5 +1,5 @@
 use crate::common::mcu::{ MCU };
-use crate::Display;
+use crate::{ Display, KeyInput };
 use crate::common::bus::{ BusError };
 
 pub trait Component {
@@ -16,4 +16,7 @@ pub trait Component {
 
     fn as_display(&self) -> Option<&dyn Display> { None }
     fn as_display_mut(&mut self) -> Option<&mut dyn Display> { None }
+
+    fn as_key_input(&self) -> Option<&dyn KeyInput> { None }
+    fn as_key_input_mut(&mut self) -> Option<&mut dyn KeyInput> { None }
 }

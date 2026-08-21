@@ -10,6 +10,7 @@ pub enum KeyEvent {
 }
 
 pub fn clear() {
+    stdout().write_all(format!("{}", cursor::Goto(1, 1)).as_bytes()).unwrap();
     stdout().write_all(format!("{}", clear::All).as_bytes());
     stdout().flush().unwrap();
 }
@@ -25,9 +26,7 @@ pub fn cursor_show() {
 }
 
 fn draw_char(x: u16, y: u16, c: char) {
-    stdout()
-        .write_all(format!("{}{}", cursor::Goto(x + 1, y + 1), c).as_bytes())
-        .unwrap();
+    stdout().write_all(format!("{}{}", cursor::Goto(x + 1, y + 1), c).as_bytes()).unwrap();
     stdout().flush().unwrap();
 }
 
@@ -65,6 +64,8 @@ pub fn init_term(main_tid: libc::pthread_t) -> Receiver<KeyEvent> {
         }
         cursor_show();
         drop(raw);
+        println!("");
+        clear();
         unsafe { libc::pthread_kill(main_tid, libc::SIGINT); }
     });
     rx

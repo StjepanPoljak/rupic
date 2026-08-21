@@ -15,11 +15,16 @@ use crate::common::byte_data::ByteData;
 use crate::common::component::Component;
 use crate::common::mcu::MCU;
 use crate::common::term::{ init_term, draw, KeyEvent };
+use crate::hw::keypad::Keypad;
 
 static MAIN_TID: AtomicU64 = AtomicU64::new(0);
 
 pub trait Display {
     fn redraw(&mut self, draw: fn(u16, u16, bool));
+}
+
+pub trait KeyInput {
+    fn get_key(&mut self, key: u8);
 }
 
 #[derive(Debug)]
@@ -55,7 +60,8 @@ pub struct BoardComponent {
 pub struct Board {
     components: Vec<BoardComponent>,
     needs_term: bool,
-    term_rx: Option<Receiver<KeyEvent>>
+    term_rx: Option<Receiver<KeyEvent>>,
+    events: Vec<KeyEvent>
 }
 
 extern "C" fn handler(_sig: libc::c_int) {
@@ -72,7 +78,7 @@ pub unsafe fn install_interrupt_signal() {
 
 impl Board {
     fn new() -> Self {
-        Self { components: vec![], needs_term: false, term_rx: None }
+        Self { components: vec![], needs_term: false, term_rx: None, events: vec![] }
     }
 
     fn add_component(&mut self, component: Box<dyn Component>) -> usize {
@@ -107,15 +113,24 @@ impl Board {
     }
 
     fn step(&mut self) -> bool {
-        let mut events = vec![];
         if let Some(rx) = &self.term_rx {
             while let Ok(event) = rx.try_recv() {
-                events.push(event);
+                self.events.push(event);
             }
         }
 
         let mut got_bp = false;
         for bc_idx in 0..self.components.len() {
+            let bc = &mut self.components[bc_idx];
+            if let Some(key_input) = bc.component.as_key_input_mut() {
+                if !self.events.is_empty() {
+                    println!("HERE");
+                    if let KeyEvent::Key(key) = self.events.pop().unwrap() {
+                        key_input.get_key(key);
+                    }
+                }
+            }
+            
             let bc = &self.components[bc_idx];
             if let Some(mcu) = bc.component.as_mcu() {
                 let mcu_pc = mcu.pc();
@@ -175,8 +190,16 @@ fn main() -> io::Result<()> {
 
     let display: ST7920 = ST7920::new();
     let display_idx = board.add_component(Box::new(display));
+
+    let mut keypad: Keypad = Keypad::new();
+    keypad.key_to_pin('a' as u8, 0x3);
+    keypad.key_to_pin('d' as u8, 0x4);
+    keypad.key_to_pin('s' as u8, 0x2);
+    keypad.key_to_pin(' ' as u8, 0x5);
+    let keypad_idx = board.add_component(Box::new(keypad));
     
     board.subscribe(display_idx, pic_idx, vec![2]);
+    board.subscribe(pic_idx, keypad_idx, vec![0]);
     board.init();
 
     unsafe { install_interrupt_signal() };

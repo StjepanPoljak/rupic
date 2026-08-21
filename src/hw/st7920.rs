@@ -108,5 +108,4 @@ impl Component for ST7920 {
 
     fn as_display(&self) -> Option<&dyn Display> { Some(self) }
     fn as_display_mut(&mut self) -> Option<&mut dyn Display> { Some(self) }
-
 }
