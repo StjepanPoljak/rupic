@@ -19,6 +19,7 @@ impl std::error::Error for BusError {}
 
 pub struct GpioGroup {
     pub pin_values: usize,
+    pub input_values: usize,
     pub width: usize,
     pub output_pending: bool
 }

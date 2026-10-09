@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use crate::{Board, ByteData};
 use std::io::{ self };
-use crate::pic::pic16f876::{MCU, SCREEN};
+use crate::common::mcu::MCU;
 use crate::pic::pic16f876::PIC16F876Bus;
 use crate::pic::pic16f876::PIC16F876;
 
@@ -143,7 +143,7 @@ where F: Fn(&String) {
 
     let pic_idx = board.add_component(Box::new(pic));
     board.add_breakpoint(pic_idx, gpsim_test_regs.endl as usize);
-    board.init_components();
+    board.init();
     board.run();
 
     let pic_mcu = board.get_component(pic_idx)?
