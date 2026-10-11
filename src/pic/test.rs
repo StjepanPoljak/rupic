@@ -203,10 +203,10 @@ fn get_bit_op_src(insn: &str, val: u8, addr: u16, bit: u8) -> Vec<String> {
 
 fn test_wf(insn: &str) {
     for _ in 0..TESTS_PER_INSN {
-        let op1 : u8 = rand::random_range(0..255);
-        let op2 : u8 = rand::random_range(0..255);
+        let op1 : u8 = rand::random_range(0..=255);
+        let op2 : u8 = rand::random_range(0..=255);
         let addr : u16 = rand::random_range(0x20..0x7f);
-        let wf : u8 = rand::random_range(0..1);
+        let wf : u8 = rand::random_range(0..=1);
         run_test(&TestCase { name: insn.to_string(),
                              source: get_wf_src(insn, op1, op2, addr, wf),
                              regs: vec![ addr ] },
@@ -216,7 +216,7 @@ fn test_wf(insn: &str) {
 
 fn test_f(insn: &str) {
     for _ in 0..TESTS_PER_INSN {
-        let val : u8 = rand::random_range(0..255);
+        let val : u8 = rand::random_range(0..=255);
         let addr : u16 = rand::random_range(0x20..0x7f);
         run_test(&TestCase { name: insn.to_string(),
                              source: get_f_src(insn, val, addr),
@@ -227,7 +227,7 @@ fn test_f(insn: &str) {
 
 fn test_w(insn: &str) {
     for _ in 0..TESTS_PER_INSN {
-        let val : u8 = rand::random_range(0..255);
+        let val : u8 = rand::random_range(0..=255);
         run_test(&TestCase { name: insn.to_string(),
                              source: get_w_src(insn, val),
                              regs: vec![ ] },
@@ -237,9 +237,9 @@ fn test_w(insn: &str) {
 
 fn test_bit_op(insn: &str) {
     for _ in 0..TESTS_PER_INSN {
-        let val : u8 = rand::random_range(0..255);
+        let val : u8 = rand::random_range(0..=255);
         let addr : u16 = rand::random_range(0x20..0x7f);
-        let bit : u8 = rand::random_range(0..7);
+        let bit : u8 = rand::random_range(0..=7);
         run_test(&TestCase { name: insn.to_string(),
                              source: get_bit_op_src(insn, val, addr, bit),
                              regs: vec![ addr ] },
@@ -345,8 +345,8 @@ fn test_btfss() {
 #[test]
 fn test_call() {
     for _ in 0..TESTS_PER_INSN {
-        let val : u8 = rand::random_range(0..255);
-        let org : u16 = rand::random_range(50..8191);
+        let val : u8 = rand::random_range(0..=255);
+        let org : u16 = rand::random_range(50..=8191);
         run_test(&TestCase { name: "CALL".to_string(),
                              source: vec![
                                  "PCLATH EQU 0x0A",
@@ -368,9 +368,9 @@ fn test_call() {
 #[test]
 fn test_nested_call() {
     for _ in 0..TESTS_PER_INSN {
-        let val : u8 = rand::random_range(0..255);
-        let val2 : u8 = rand::random_range(0..255);
-        let org : u16 = rand::random_range(50..8191);
+        let val : u8 = rand::random_range(0..=255);
+        let val2 : u8 = rand::random_range(0..=255);
+        let org : u16 = rand::random_range(50..=8188); // fn2 is 4 words and must end by 0x1fff
         run_test(&TestCase { name: "CALL".to_string(),
                              source: vec![
                                  "PCLATH EQU 0x0A",

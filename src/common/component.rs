@@ -7,7 +7,7 @@ pub trait Component {
     fn step(&mut self) -> u32;
 
     fn receive_input(&mut self, gpio_idx: usize, pin_values: usize) {}
-    fn output_pending(&self) -> bool { false }
+    fn output_pending(&self, gpio_idx: usize) -> bool { false }
     fn clear_output_pending(&mut self) { }
     fn get_gpio_values(&self, gpio_idx: usize) -> Result<usize, BusError> { Err(BusError::NotImplemented) }
 

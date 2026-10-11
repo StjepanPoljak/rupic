@@ -55,7 +55,7 @@ impl Component for Keypad {
     }
 
     fn receive_input(&mut self, _gpio_idx: usize, _pin_values: usize) { }
-    fn output_pending(&self) -> bool { self.output_pending }
+    fn output_pending(&self, _gpio_idx: usize) -> bool { self.output_pending }
     fn clear_output_pending(&mut self) { self.output_pending = false; }
     fn get_gpio_values(&self, _gpio_idx: usize) -> Result<usize, BusError> { Ok(self.pin_values as usize) }
 

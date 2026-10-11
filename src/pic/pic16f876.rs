@@ -65,12 +65,12 @@ impl PIC16F876Bus {
         mapped as usize
     }
 
-    // Value seen on PORTB pins: output latch for output pins, external
-    // input for pins configured as inputs in TRISB.
-    fn portb_pins(&self) -> u8 {
-        let tris = self.ram[Register::TRISB as usize];
-        let latch = self.ram[Register::PORTB as usize];
-        (latch & !tris) | (self.portb.input_values as u8 & tris)
+    // Value seen on port pins: output latch for output pins, external
+    // input for pins configured as inputs in the TRIS register.
+    fn port_pins(&self, port: Register, tris: Register, input_values: usize) -> u8 {
+        let tris = self.ram[tris as usize];
+        let latch = self.ram[port as usize];
+        (latch & !tris) | (input_values as u8 & tris)
     }
 
     // Advances Timer1 by the given number of instruction cycles
@@ -157,8 +157,10 @@ impl Bus for PIC16F876Bus {
         let addr = Self::map_addr(addr);
 
         match addr {
-            a if a == Register::PORTB as usize => self.portb_pins(),
-            a if a == Register::PORTC as usize => 0x80, // busy flag emulation
+            a if a == Register::PORTB as usize =>
+                self.port_pins(Register::PORTB, Register::TRISB, self.portb.input_values),
+            a if a == Register::PORTC as usize =>
+                self.port_pins(Register::PORTC, Register::TRISC, self.portc.input_values),
             _ => self.ram[addr]
         }
     }
@@ -171,10 +173,13 @@ impl Bus for PIC16F876Bus {
             a if a == Register::TMR1L as usize || a == Register::TMR1H as usize => {
                 self.tmr1_prescaler = 0;
             },
+            a if a == Register::PORTA as usize => {
+                self.porta.pin_values = val as usize;
+                self.porta.output_pending = true;
+            },
             a if a == Register::PORTB as usize => {
-                // TODO: not flagged as output_pending, since pending is tracked
-                // per component and would re-deliver PORTC to the display.
                 self.portb.pin_values = val as usize;
+                self.portb.output_pending = true;
             },
             a if a == Register::PORTC as usize => {
                 self.portc.pin_values = val as usize;
@@ -217,7 +222,7 @@ impl PIC16F876Bus {
                 .map(|c| u16::from_le_bytes ([c[0], c[1]]) & 0x3fff)
                 .collect::<Vec<u16>>();
 
-            if end >= 0x2000 {
+            if end > 0x2000 {
                 println!("discarding {:#x}..{:#x} <- len: {}", start, end, bytes16.len());
                 continue;
             }
@@ -244,8 +249,8 @@ impl Component for PIC16F876 {
         self.bus.set_gpio_group(gpio_idx, pin_values).expect("Gpio group not found.");
     }
 
-    fn output_pending(&self) -> bool {
-        self.bus.porta.output_pending || self.bus.portb.output_pending || self.bus.portc.output_pending
+    fn output_pending(&self, gpio_idx: usize) -> bool {
+        self.bus.get_gpio_group(gpio_idx).map_or(false, |group| group.output_pending)
     }
 
     fn clear_output_pending(&mut self) -> () {

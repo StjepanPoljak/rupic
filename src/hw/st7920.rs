@@ -1,10 +1,24 @@
 use crate::{ Display, Component };
 use crate::common::byte_data::ByteData;
-use termion::{ terminal_size };
+use crate::common::bus::BusError;
+use crate::common::term::term_size;
+
+// Gpio groups: the data bus DB0..DB7, and the control lines.
+pub const ST7920_DATA: usize = 0;
+pub const ST7920_CONTROL: usize = 1;
+
+// Control line bits.
+const RW: usize = 0x02;
+const E: usize = 0x04;
+
+// Byte driven on the data bus during a read. The game waits for bit 7 to be
+// *set* (BTFSS PORTCSTATUS, BF in LCD_Wait), the inverse of the datasheet busy
+// flag, and polls with RS = 1 when writing data. Answer every read with it.
+const READ_VALUE: u8 = 0x80;
 
 fn draw_rot(ha: u16, va: u16, state: bool, draw_raw: fn(u16, u16, bool)) {
-    let (width, height) = terminal_size().unwrap();
-    let (w_pos, h_pos) = (width / 2 - 8, height / 2 - 16);
+    let (width, height) = term_size();
+    let (w_pos, h_pos) = ((width / 2).saturating_sub(8), (height / 2).saturating_sub(16));
 
     if ha / 4 > 32 {
         if va < 8 {
@@ -45,7 +59,9 @@ pub struct ST7920 {
     pub screen: [[u8; 256]; 64],
     pub state: ST7920DataState,
     pub coord: Coordinate,
-    need_redraw: bool
+    need_redraw: bool,
+    data_out: u8,
+    output_pending: bool
 }
 
 impl ST7920 {
@@ -53,7 +69,9 @@ impl ST7920 {
         Self { screen: [[0u8; 256]; 64],
                state: ST7920DataState::VerticalAddress,
                coord: Coordinate { VA: 0, HA: 0 },
-               need_redraw: false }
+               need_redraw: false,
+               data_out: 0,
+               output_pending: false }
     }
 
     fn print_screen(&self) {
@@ -85,6 +103,16 @@ impl Component for ST7920 {
     fn step(&mut self) -> u32 { 0 }
 
     fn receive_input(&mut self, gpio_idx: usize, pin_values: usize) {
+        if gpio_idx == ST7920_CONTROL {
+            // The data bus is driven only while a read is strobed (RW = 1, E = 1).
+            let data_out = if pin_values & (RW | E) == RW | E { READ_VALUE } else { 0 };
+            if data_out != self.data_out {
+                self.data_out = data_out;
+                self.output_pending = true;
+            }
+            return;
+        }
+
         if pin_values & 0x80 != 0 && !self.state.is_data() {
             if self.state == ST7920DataState::VerticalAddress {
                 self.coord.VA = (pin_values & 0x7f) as usize;
@@ -103,8 +131,15 @@ impl Component for ST7920 {
         }
     }
 
-    fn output_pending(&self) -> bool { false }
-    fn clear_output_pending(&mut self) { }
+    fn output_pending(&self, gpio_idx: usize) -> bool { gpio_idx == ST7920_DATA && self.output_pending }
+    fn clear_output_pending(&mut self) { self.output_pending = false; }
+
+    fn get_gpio_values(&self, gpio_idx: usize) -> Result<usize, BusError> {
+        match gpio_idx {
+            ST7920_DATA => Ok(self.data_out as usize),
+            _ => Err(BusError::InvalidGpioGroup)
+        }
+    }
 
     fn as_display(&self) -> Option<&dyn Display> { Some(self) }
     fn as_display_mut(&mut self) -> Option<&mut dyn Display> { Some(self) }

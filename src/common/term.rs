@@ -2,6 +2,16 @@ use std::io::{ stdin, stdout, Read, Write };
 use termion::raw::IntoRawMode;
 use termion::{ cursor, clear, terminal_size };
 use std::sync::mpsc::Receiver;
+use std::sync::atomic::{ AtomicU32, Ordering };
+use std::cell::RefCell;
+
+// Terminal size as (width << 16 | height), refreshed by present().
+static TERM_SIZE: AtomicU32 = AtomicU32::new(0);
+
+thread_local! {
+    // Output of draw() since the last present().
+    static FRAME: RefCell<Vec<u8>> = RefCell::new(Vec::new());
+}
 
 #[derive(Eq, PartialEq, Debug, Copy, Clone)]
 pub enum KeyEvent {
@@ -25,9 +35,34 @@ pub fn cursor_show() {
     stdout().flush().unwrap();
 }
 
+pub fn term_size() -> (u16, u16) {
+    let size = TERM_SIZE.load(Ordering::Relaxed);
+    ((size >> 16) as u16, size as u16)
+}
+
+fn update_term_size() {
+    if let Ok((width, height)) = terminal_size() {
+        TERM_SIZE.store((width as u32) << 16 | height as u32, Ordering::Relaxed);
+    }
+}
+
+// Writes out everything drawn since the last call, once per frame.
+pub fn present() {
+    FRAME.with_borrow_mut(|frame| {
+        if !frame.is_empty() {
+            let mut out = stdout().lock();
+            out.write_all(frame).unwrap();
+            out.flush().unwrap();
+            frame.clear();
+        }
+    });
+    update_term_size();
+}
+
 fn draw_char(x: u16, y: u16, c: char) {
-    stdout().write_all(format!("{}{}", cursor::Goto(x + 1, y + 1), c).as_bytes()).unwrap();
-    stdout().flush().unwrap();
+    FRAME.with_borrow_mut(|frame| {
+        write!(frame, "{}{}", cursor::Goto(x + 1, y + 1), c).unwrap();
+    });
 }
 
 pub fn draw(x: u16, y: u16, state: bool) {
@@ -37,6 +72,7 @@ pub fn draw(x: u16, y: u16, state: bool) {
 pub fn init_term(main_tid: libc::pthread_t) -> Receiver<KeyEvent> {
     clear();
     cursor_hide();
+    update_term_size();
 
     let (tx, rx) = std::sync::mpsc::channel();
 

@@ -1,4 +1,5 @@
 use std::io::{self};
+use std::sync::OnceLock;
 
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub enum BitStatus {
@@ -6,8 +7,10 @@ pub enum BitStatus {
     Clear
 }
 
+// DEBUG_INSN is read once, on the first traced instruction.
 pub fn trace_insn(msg: &str) {
-    if let Ok(debug_insn) = unsafe { std::env::var("DEBUG_INSN") } {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    if *ENABLED.get_or_init(|| std::env::var_os("DEBUG_INSN").is_some()) {
         println!("{}", msg);
     }
 }

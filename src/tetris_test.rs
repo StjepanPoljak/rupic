@@ -3,7 +3,7 @@ use crate::{ Board, KEYPAD_HOLD_STEPS };
 use crate::common::byte_data::ByteData;
 use crate::common::mcu::MCU;
 use crate::hw::keypad::Keypad;
-use crate::hw::st7920::ST7920;
+use crate::hw::st7920::{ ST7920, ST7920_DATA, ST7920_CONTROL };
 use crate::pic::pic16f876::PIC16F876;
 
 const PLAYERXPOS: usize = 0x72;
@@ -32,7 +32,8 @@ impl Tetris {
         keypad.key_to_pin(b' ', 0x5);
         let keypad_idx = board.add_component(Box::new(keypad));
 
-        board.subscribe(display_idx, pic_idx, vec![(2, 2)]);
+        board.subscribe(display_idx, pic_idx, vec![(2, ST7920_DATA), (0, ST7920_CONTROL)]);
+        board.subscribe(pic_idx, display_idx, vec![(ST7920_DATA, 2)]);
         board.subscribe(pic_idx, keypad_idx, vec![(0, 1)]);
         board.init();
 

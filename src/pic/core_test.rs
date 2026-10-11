@@ -110,3 +110,33 @@ fn timer1_counts_with_prescaler() {
     let tmr1 = (pic.bus.read(0x0F) as u16) << 8 | pic.bus.read(0x0E) as u16;
     assert_eq!(tmr1, 100);
 }
+
+#[test]
+fn portc_reads_input_when_tris_is_input() {
+    // PORTC latch = 0x55, external input = 0x80
+    let mut pic = run(&[movlw(0x55), movwf(0x07)], 2);
+    pic.receive_input(2, 0x80);
+    // TRISC = 0x00 after reset: pins follow the latch
+    assert_eq!(pic.bus.read(0x07), 0x55);
+    pic.bus.write(0x87, 0xFF);
+    assert_eq!(pic.bus.read(0x07), 0x80);
+}
+
+#[test]
+fn output_pending_is_per_port() {
+    let mut pic = run(&[movlw(0x01), movwf(0x06)], 2);
+    assert!(pic.output_pending(1));
+    assert!(!pic.output_pending(0) && !pic.output_pending(2));
+    pic.clear_output_pending();
+    pic.step(); // ROM is 0x3fff (ADDLW 0xff) past the program: no port write
+    assert!(!pic.output_pending(1));
+}
+
+#[test]
+fn load_rom_keeps_last_word() {
+    let mut pic = PIC16F876::new();
+    let mut data = ByteData::new();
+    data.push(ByteDataBlock { address: 0x3ffc, bytes: vec![0x08, 0x00, 0x08, 0x00] });
+    pic.load_rom(&data);
+    assert_eq!(pic.bus.rom[0x1ffe..], [0x0008, 0x0008]);
+}

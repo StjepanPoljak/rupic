@@ -3,6 +3,7 @@ use std::fmt;
 use std::sync::atomic::{ Ordering, AtomicU64, AtomicBool };
 use std::sync::mpsc::Receiver;
 use std::collections::VecDeque;
+use std::time::{ Duration, Instant };
 
 static SIGINT: AtomicBool = AtomicBool::new(false);
 
@@ -14,14 +15,20 @@ mod hw;
 mod tetris_test;
 
 use crate::pic::pic16f876::PIC16F876;
-use crate::hw::st7920::ST7920;
+use crate::hw::st7920::{ ST7920, ST7920_DATA, ST7920_CONTROL };
 use crate::common::byte_data::ByteData;
 use crate::common::component::Component;
 use crate::common::mcu::MCU;
-use crate::common::term::{ init_term, draw, KeyEvent };
+use crate::common::term::{ init_term, draw, present, KeyEvent };
 use crate::hw::keypad::Keypad;
 
 const KEYPAD_HOLD_STEPS: u32 = 100_000;
+
+// Board::run checks the throttle and the frame timer every SYNC_STEPS steps.
+const SYNC_STEPS: u32 = 1_000;
+const FRAME_TIME: Duration = Duration::from_millis(16);
+// When the host falls further behind real time than this, stop catching up.
+const MAX_LAG: Duration = Duration::from_millis(100);
 
 static MAIN_TID: AtomicU64 = AtomicU64::new(0);
 
@@ -75,7 +82,9 @@ pub struct Board {
     needs_term: bool,
     term_rx: Option<Receiver<KeyEvent>>,
     events: VecDeque<KeyEvent>,
-    headless: bool
+    headless: bool,
+    cycles: u64,
+    cycle_time: Option<Duration>
 }
 
 extern "C" fn handler(_sig: libc::c_int) {
@@ -92,7 +101,14 @@ pub unsafe fn install_interrupt_signal() {
 
 impl Board {
     fn new() -> Self {
-        Self { components: vec![], needs_term: false, term_rx: None, events: VecDeque::new(), headless: false }
+        Self { components: vec![], needs_term: false, term_rx: None, events: VecDeque::new(), headless: false,
+               cycles: 0, cycle_time: None }
+    }
+
+    // Makes run() sleep so that each cycle reported by the components'
+    // step() takes cycle_time of wall-clock time. Unthrottled by default.
+    fn set_cycle_time(&mut self, cycle_time: Duration) {
+        self.cycle_time = Some(cycle_time);
     }
 
     // No terminal, no drawing; input is fed through push_key().
@@ -162,7 +178,7 @@ impl Board {
                     got_bp = true;
                 }
             }
-            self.components[bc_idx].component.step();
+            self.cycles += self.components[bc_idx].component.step() as u64;
 
             let bc = &mut self.components[bc_idx];
             if let Some(display) = bc.component.as_display_mut() {
@@ -172,17 +188,17 @@ impl Board {
             }
 
             let bc = &self.components[bc_idx];
-            if bc.component.output_pending() {
-                let deliveries: Vec<_> = bc.subscribers
-                    .iter().flat_map(|sub| sub.routes.iter().map(|route| {
+            let deliveries: Vec<_> = bc.subscribers
+                .iter().flat_map(|sub| sub.routes.iter()
+                    .filter(|route| bc.component.output_pending(route.src))
+                    .map(|route| {
                         let values = bc.component
                             .get_gpio_values(route.src)
                             .expect("Gpio group not found.");
                         (sub.bc_idx, route.dst, values)})).collect();
 
-                for (target_idx, gpio_idx, values) in deliveries {
-                    self.components[target_idx].component.receive_input(gpio_idx, values);
-                }
+            for (target_idx, gpio_idx, values) in deliveries {
+                self.components[target_idx].component.receive_input(gpio_idx, values);
             }
 
             let bc = &mut self.components[bc_idx];
@@ -192,6 +208,11 @@ impl Board {
     }
 
     fn run(&mut self) {
+        let draws = self.needs_term && !self.headless;
+        let mut last_frame = Instant::now();
+        // Wall-clock time at which self.cycles had the value sync_cycles.
+        let (mut sync_time, mut sync_cycles) = (Instant::now(), self.cycles);
+        let mut steps: u32 = 0;
 
         loop {
             if SIGINT.load(Ordering::Relaxed) {
@@ -199,8 +220,32 @@ impl Board {
             }
 
             if self.step() {
+                if draws {
+                    present();
+                }
                 println!("Got breakpoint!");
                 break;
+            }
+
+            steps = steps.wrapping_add(1);
+            if steps % SYNC_STEPS != 0 {
+                continue;
+            }
+
+            if let Some(cycle_time) = self.cycle_time {
+                let target = Duration::from_nanos(
+                    (cycle_time.as_nanos() as u64).saturating_mul(self.cycles - sync_cycles));
+                let elapsed = sync_time.elapsed();
+                if elapsed < target {
+                    std::thread::sleep(target - elapsed);
+                } else if elapsed - target > MAX_LAG {
+                    (sync_time, sync_cycles) = (Instant::now(), self.cycles);
+                }
+            }
+
+            if draws && last_frame.elapsed() >= FRAME_TIME {
+                present();
+                last_frame = Instant::now();
             }
         }
     }
@@ -228,8 +273,11 @@ fn main() -> io::Result<()> {
     keypad.key_to_pin('k' as u8, 0x6);
     let keypad_idx = board.add_component(Box::new(keypad));
     
-    board.subscribe(display_idx, pic_idx, vec![(2, 2)]); // PORTC -> LCD data
+    board.subscribe(display_idx, pic_idx, vec![(2, ST7920_DATA),       // PORTC -> LCD data
+                                              (0, ST7920_CONTROL)]);  // PORTA -> LCD RS/RW/E
+    board.subscribe(pic_idx, display_idx, vec![(ST7920_DATA, 2)]);    // LCD data -> PORTC
     board.subscribe(pic_idx, keypad_idx, vec![(0, 1)]);  // keypad -> PORTB
+    board.set_cycle_time(Duration::from_micros(1)); // 4 MHz crystal, Fosc/4 per cycle
     board.init();
 
     unsafe { install_interrupt_signal() };
