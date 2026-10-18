@@ -4,9 +4,10 @@ use crate::common::common::*;
 use std::io::{self};
 use crate::common::byte_data::*;
 use crate::common::bus::{ Bus, GpioGroup, BusError };
-use crate::common::component::{ Component };
+use crate::common::component::{ Component, Ctx };
 use crate::common::mcu::{ MCU, RegDump, MemDump };
-use crate::common::time::{ Time, Ctx, S };
+use crate::common::net::Level;
+use crate::common::time::{ Time, S };
 
 #[cfg(test)]
 mod tests {
@@ -19,6 +20,17 @@ mod core_tests {
     include!("core_test.rs");
 }
 
+const PINS: [&str; 22] = ["RA0", "RA1", "RA2", "RA3", "RA4", "RA5",
+                          "RB0", "RB1", "RB2", "RB3", "RB4", "RB5", "RB6", "RB7",
+                          "RC0", "RC1", "RC2", "RC3", "RC4", "RC5", "RC6", "RC7"];
+
+// Per gpio group: port register, TRIS register, index of its first pin.
+const PORTS: [(usize, usize, usize); 3] = [
+    (Register::PORTA as usize, Register::TRISA as usize, 0),
+    (Register::PORTB as usize, Register::TRISB as usize, 6),
+    (Register::PORTC as usize, Register::TRISC as usize, 14)
+];
+
 pub struct PIC16F876Bus {
     pub rom: [u16; 0x2000],
     pub ram: [u8; 512],
@@ -30,8 +42,7 @@ pub struct PIC16F876Bus {
 
 impl GpioGroup {
     fn new(width: usize) -> Self {
-        Self { pin_values: 0x0,
-               input_values: 0x0,
+        Self { input_values: 0x0,
                width,
                output_pending: false
         }
@@ -42,7 +53,7 @@ impl PIC16F876Bus {
     pub fn new() -> Self {
         PIC16F876Bus { rom: [0x3fffu16; 0x2000],
                        ram: [0u8; 512],
-                       porta: GpioGroup::new(8),
+                       porta: GpioGroup::new(6),
                        portb: GpioGroup::new(8),
                        portc: GpioGroup::new(8),
                        tmr1_prescaler: 0
@@ -180,16 +191,13 @@ impl Bus for PIC16F876Bus {
             a if a == Register::TMR1L as usize || a == Register::TMR1H as usize => {
                 self.tmr1_prescaler = 0;
             },
-            a if a == Register::PORTA as usize => {
-                self.porta.pin_values = val as usize;
+            a if a == Register::PORTA as usize || a == Register::TRISA as usize => {
                 self.porta.output_pending = true;
             },
-            a if a == Register::PORTB as usize => {
-                self.portb.pin_values = val as usize;
+            a if a == Register::PORTB as usize || a == Register::TRISB as usize => {
                 self.portb.output_pending = true;
             },
-            a if a == Register::PORTC as usize => {
-                self.portc.pin_values = val as usize;
+            a if a == Register::PORTC as usize || a == Register::TRISC as usize => {
                 self.portc.output_pending = true;
             },
             _ => ()
@@ -220,6 +228,33 @@ impl Bus for PIC16F876Bus {
 }
 
 impl PIC16F876Bus {
+    fn gpio_group_mut(&mut self, gpio_idx: usize) -> &mut GpioGroup {
+        match gpio_idx {
+            0 => &mut self.porta,
+            1 => &mut self.portb,
+            _ => &mut self.portc
+        }
+    }
+
+    // Drives the pins of every port whose latch or TRIS register was
+    // written: the latch on output pins, Z on input pins.
+    fn drive_ports(&mut self, ctx: &mut Ctx) {
+        for (gpio_idx, (port, tris, first_pin)) in PORTS.into_iter().enumerate() {
+            let group = self.gpio_group_mut(gpio_idx);
+            if !group.output_pending {
+                continue;
+            }
+            group.output_pending = false;
+            let width = group.width;
+
+            let (latch, tris) = (self.ram[port], self.ram[tris]);
+            for bit in 0..width {
+                let level = if tris & (1 << bit) != 0 { Level::Z } else { Level::from_bit(latch & (1 << bit) != 0) };
+                ctx.drive(first_pin + bit, level);
+            }
+        }
+    }
+
     pub fn load_rom(&mut self, byte_data: &ByteData) {
         for ByteDataBlock { address: addr, bytes  } in byte_data {
             let start = (addr / 2) as usize;
@@ -248,30 +283,28 @@ impl Component for PIC16F876 {
         Some(self.cycle_time)
     }
 
-    fn step(&mut self, _ctx: &mut Ctx) -> u32 {
+    fn pins(&self) -> &[&'static str] {
+        &PINS
+    }
+
+    fn step(&mut self, ctx: &mut Ctx) -> u32 {
         let insn = self.bus.fetch(self.core.pc);
         let cycles = self.core.exec_insn(insn, &mut self.bus).expect(format!("Unknown instruction: {:#x}", insn).as_str());
         self.core.pc = self.core.pc.wrapping_add(1) & 0x1fff;
         self.bus.tick(cycles as u32);
+        self.bus.drive_ports(ctx);
         cycles as u32
     }
 
-    fn receive_input(&mut self, gpio_idx: usize, pin_values: usize) {
-        self.bus.set_gpio_group(gpio_idx, pin_values).expect("Gpio group not found.");
-    }
-
-    fn output_pending(&self, gpio_idx: usize) -> bool {
-        self.bus.get_gpio_group(gpio_idx).map_or(false, |group| group.output_pending)
-    }
-
-    fn clear_output_pending(&mut self) -> () {
-        self.bus.porta.output_pending = false;
-        self.bus.portb.output_pending = false;
-        self.bus.portc.output_pending = false;
-    }
-
-    fn get_gpio_values(&self, gpio_idx: usize) -> Result<usize, BusError> {
-        Ok(self.bus.get_gpio_group(gpio_idx)?.pin_values)
+    fn input_changed(&mut self, pin: usize, level: Level, _ctx: &mut Ctx) {
+        let gpio_idx = PORTS.iter().rposition(|(_, _, first_pin)| pin >= *first_pin).unwrap();
+        let bit = pin - PORTS[gpio_idx].2;
+        let group = self.bus.gpio_group_mut(gpio_idx);
+        if level.is_high() {
+            group.input_values |= 1 << bit;
+        } else {
+            group.input_values &= !(1 << bit);
+        }
     }
 
     fn as_mcu(&self) -> Option<&dyn MCU> { Some(self) }

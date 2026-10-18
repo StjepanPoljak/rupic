@@ -1,11 +1,7 @@
 // Headless smoke tests running the real TETRIS.hex game image.
-use crate::{ Board, KEYPAD_HOLD };
-use crate::common::byte_data::ByteData;
+use crate::{ Board, add_tetris };
 use crate::common::mcu::MCU;
 use crate::common::time::{ Time, US, MS, S };
-use crate::hw::keypad::Keypad;
-use crate::hw::st7920::{ ST7920, ST7920_DATA, ST7920_CONTROL };
-use crate::pic::pic16f876::PIC16F876;
 
 const PLAYERXPOS: usize = 0x72;
 const PLAYERYPOS: usize = 0x73;
@@ -19,22 +15,7 @@ struct Tetris {
 impl Tetris {
     fn new() -> Self {
         let mut board = Board::new_headless();
-
-        let mut pic = PIC16F876::new();
-        pic.load_rom(&ByteData::new_from_intel_hex("./TETRIS.hex").unwrap());
-        let pic_idx = board.add_component(Box::new(pic));
-        let display_idx = board.add_component(Box::new(ST7920::new()));
-
-        let mut keypad = Keypad::new(0x10, KEYPAD_HOLD);
-        keypad.key_to_pin(b'a', 0x3);
-        keypad.key_to_pin(b'd', 0x4);
-        keypad.key_to_pin(b's', 0x2);
-        keypad.key_to_pin(b' ', 0x5);
-        let keypad_idx = board.add_component(Box::new(keypad));
-
-        board.subscribe(display_idx, pic_idx, vec![(2, ST7920_DATA), (0, ST7920_CONTROL)]);
-        board.subscribe(pic_idx, display_idx, vec![(ST7920_DATA, 2)]);
-        board.subscribe(pic_idx, keypad_idx, vec![(0, 1)]);
+        let pic_idx = add_tetris(&mut board).unwrap();
         board.init();
 
         Self { board, pic_idx }
@@ -109,6 +90,7 @@ fn keys_move_piece_once_per_press() {
     check(&mut t, b'd', 1);
     check(&mut t, b'd', 1);
     check(&mut t, b'd', 1);
+    assert_eq!(t.board.contentions(), 0);
 }
 
 #[test]

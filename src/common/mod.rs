@@ -6,3 +6,4 @@ pub mod bus;
 pub mod mcu;
 pub mod term;
 pub mod time;
+pub mod net;

@@ -1,7 +1,7 @@
 // Core tests that don't need gpasm/gpsim: programs are hand-encoded opcodes.
 use crate::common::bus::Bus;
-use crate::common::component::Component;
-use crate::common::time::Ctx;
+use crate::common::component::{ Component, Ctx };
+use crate::common::net::Level;
 
 const STATUS: u16 = 0x03;
 const C: u8 = 0x01;
@@ -23,6 +23,21 @@ fn run(program: &[u16], steps: usize) -> PIC16F876 {
         pic.step(&mut Ctx::new(0));
     }
     pic
+}
+
+// Drives the external side of port pins, e.g. port "RB" for RB0..RB7.
+fn set_inputs(pic: &mut PIC16F876, port: &str, values: u8) {
+    for bit in 0..8 {
+        let pin = pic.pins().iter().position(|p| *p == format!("{port}{bit}")).unwrap();
+        pic.input_changed(pin, Level::from_bit(values & (1 << bit) != 0), &mut Ctx::new(0));
+    }
+}
+
+// Runs one instruction; returns the pins it drove.
+fn step_drives(pic: &mut PIC16F876) -> Vec<(&'static str, Level)> {
+    let mut ctx = Ctx::new(0);
+    pic.step(&mut ctx);
+    ctx.take_drives().into_iter().map(|(pin, level, _)| (PINS[pin], level)).collect()
 }
 
 fn status(pic: &PIC16F876) -> u8 {
@@ -84,7 +99,7 @@ fn trisb_and_portb_are_distinct() {
     let mut pic = run(&[bsf(0x03, 5), movlw(0x1F), movwf(0x06), bcf(0x03, 5),
                         movlw(0xA0), movwf(0x06)], 6);
     assert_eq!(pic.bus.read(0x86), 0x1F);
-    pic.receive_input(1, 0x15);
+    set_inputs(&mut pic, "RB", 0x15);
     // RB7..RB5 driven by the latch, RB4..RB0 by the external input
     assert_eq!(pic.bus.read(0x06), 0xA0 | 0x15);
 }
@@ -116,7 +131,7 @@ fn timer1_counts_with_prescaler() {
 fn portc_reads_input_when_tris_is_input() {
     // PORTC latch = 0x55, external input = 0x80
     let mut pic = run(&[movlw(0x55), movwf(0x07)], 2);
-    pic.receive_input(2, 0x80);
+    set_inputs(&mut pic, "RC", 0x80);
     // TRISC = 0x00 after reset: pins follow the latch
     assert_eq!(pic.bus.read(0x07), 0x55);
     pic.bus.write(0x87, 0xFF);
@@ -124,13 +139,17 @@ fn portc_reads_input_when_tris_is_input() {
 }
 
 #[test]
-fn output_pending_is_per_port() {
-    let mut pic = run(&[movlw(0x01), movwf(0x06)], 2);
-    assert!(pic.output_pending(1));
-    assert!(!pic.output_pending(0) && !pic.output_pending(2));
-    pic.clear_output_pending();
-    pic.step(&mut Ctx::new(0)); // ROM is 0x3fff (ADDLW 0xff) past the program: no port write
-    assert!(!pic.output_pending(1));
+fn port_writes_drive_their_pins() {
+    // MOVWF PORTB, then TRISB = 0xFE from bank 1
+    let mut pic = run(&[movlw(0x01), movwf(0x06), bsf(0x03, 5), movlw(0xFE), movwf(0x06)], 1);
+    let rb = |levels: [Level; 8]| (0..8).map(|bit| (PINS[6 + bit], levels[bit])).collect::<Vec<_>>();
+    let (l, h, z) = (Level::Low, Level::High, Level::Z);
+
+    assert_eq!(step_drives(&mut pic), rb([h, l, l, l, l, l, l, l]));
+    assert_eq!(step_drives(&mut pic), vec![]);
+    assert_eq!(step_drives(&mut pic), vec![]);
+    // input pins are released
+    assert_eq!(step_drives(&mut pic), rb([h, z, z, z, z, z, z, z]));
 }
 
 #[test]

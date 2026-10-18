@@ -7,9 +7,10 @@ use std::cmp::Reverse;
 use std::time::{ Duration, Instant };
 
 use crate::SIGINT;
-use crate::common::component::Component;
+use crate::common::component::{ Component, Ctx };
+use crate::common::net::Level;
 use crate::common::term::{ init_term, draw, present, KeyEvent };
-use crate::common::time::{ Time, Ctx, NS };
+use crate::common::time::{ Time, NS };
 
 // Board::run checks the throttle and the frame timer every SYNC_STEPS steps.
 const SYNC_STEPS: u32 = 1_000;
@@ -36,22 +37,26 @@ pub struct Breakpoint {
     addr: usize
 }
 
-// Routes a source component's gpio group (src) to a gpio group (dst) of the
-// subscribed component, e.g. keypad group 0 -> PIC PORTB (group 1).
-pub struct GpioRoute {
-    src: usize,
-    dst: usize
-}
-
-pub struct Subscriber {
-    bc_idx: usize,
-    routes: Vec<GpioRoute>
+pub struct PinState {
+    net: Option<usize>,
+    // Level the pin drives onto its net now.
+    drive: Level,
+    // Level the pin drives once its scheduled drive events are done.
+    scheduled: Level
 }
 
 pub struct BoardComponent {
+    name: String,
     component: Box<dyn Component>,
     breakpoints: Vec<Breakpoint>,
-    subscribers: Vec<Subscriber>
+    pins: Vec<PinState>
+}
+
+// A signal connecting pins, given as (bc_idx, pin) pairs.
+pub struct Net {
+    name: String,
+    pins: Vec<(usize, usize)>,
+    level: Level
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -59,11 +64,15 @@ enum EventKind {
     // A clocked component's next step is due.
     Clock(usize),
     // A wakeup asked for by a component is due.
-    Wake(usize)
+    Wake(usize),
+    // A pin starts driving a level: (bc_idx, pin, level).
+    Drive(usize, usize, Level)
 }
 
 pub struct Board {
     components: Vec<BoardComponent>,
+    nets: Vec<Net>,
+    contentions: u64,
     needs_term: bool,
     term_rx: Option<Receiver<KeyEvent>>,
     events: VecDeque<KeyEvent>,
@@ -77,7 +86,7 @@ pub struct Board {
 
 impl Board {
     pub fn new() -> Self {
-        Self { components: vec![], needs_term: false, term_rx: None, events: VecDeque::new(), headless: false,
+        Self { components: vec![], nets: vec![], contentions: 0, needs_term: false, term_rx: None, events: VecDeque::new(), headless: false,
                queue: BinaryHeap::new(), seq: 0, now: 0, realtime: false }
     }
 
@@ -103,12 +112,62 @@ impl Board {
         self.now
     }
 
-    pub fn add_component(&mut self, component: Box<dyn Component>) -> usize {
+    // Times a net went into contention (Level::X).
+    #[allow(unused)]
+    pub fn contentions(&self) -> u64 {
+        self.contentions
+    }
+
+    #[allow(unused)]
+    pub fn net_level(&self, name: &str) -> Option<Level> {
+        self.nets.iter().find(|net| net.name == name).map(|net| net.level)
+    }
+
+    // The name is used to refer to the component's pins, as "NAME.PIN".
+    pub fn add_component(&mut self, name: &str, component: Box<dyn Component>) -> usize {
         if let Some(_) = component.as_display() {
             self.needs_term = true;
         }
-        self.components.push(BoardComponent { component, breakpoints: vec![], subscribers: vec![] });
+        let pins = component.pins().iter()
+            .map(|_| PinState { net: None, drive: Level::Z, scheduled: Level::Z }).collect();
+        self.components.push(BoardComponent { name: name.to_string(), component, breakpoints: vec![], pins });
         self.components.len() - 1
+    }
+
+    // Resolves "NAME.PIN" to (bc_idx, pin).
+    fn find_pin(&self, pin_name: &str) -> (usize, usize) {
+        let (name, pin) = pin_name.split_once('.').unwrap_or_else(|| panic!("Pin {pin_name} is not NAME.PIN."));
+        let bc_idx = self.components.iter().position(|bc| bc.name == name)
+            .unwrap_or_else(|| panic!("No component called {name}."));
+        let pin = self.components[bc_idx].component.pins().iter().position(|p| *p == pin)
+            .unwrap_or_else(|| panic!("Component {name} has no pin {pin}."));
+        (bc_idx, pin)
+    }
+
+    // Connects pins, given as "NAME.PIN", with a new net. Panics if a pin
+    // doesn't exist or is already connected.
+    pub fn net(&mut self, name: &str, pin_names: &[&str]) {
+        let net_idx = self.nets.len();
+        let mut pins = vec![];
+        for pin_name in pin_names {
+            let (bc_idx, pin) = self.find_pin(pin_name);
+            let state = &mut self.components[bc_idx].pins[pin];
+            assert!(state.net.is_none(), "Pin {pin_name} is already connected.");
+            state.net = Some(net_idx);
+            pins.push((bc_idx, pin));
+        }
+        self.nets.push(Net { name: name.to_string(), pins, level: Level::Z });
+    }
+
+    // Connects a bus of width nets, called name0, name1, ...; net i
+    // connects pin i of every prefix, e.g. bus("D", 8, &["PIC.RC", "LCD.DB"])
+    // connects PIC.RC0 to LCD.DB0 with net D0, and so on.
+    pub fn bus(&mut self, name: &str, width: usize, prefixes: &[&str]) {
+        for i in 0..width {
+            let pin_names: Vec<String> = prefixes.iter().map(|prefix| format!("{prefix}{i}")).collect();
+            let pin_names: Vec<&str> = pin_names.iter().map(String::as_str).collect();
+            self.net(&format!("{name}{i}"), &pin_names);
+        }
     }
 
     pub fn add_breakpoint(&mut self, bc_idx: usize, addr: usize) -> (usize, usize) {
@@ -129,13 +188,6 @@ impl Board {
         }
     }
 
-    // bc_idx receives the gpio groups of out_bc_idx, as (src, dst) pairs.
-    pub fn subscribe(&mut self, bc_idx: usize, out_bc_idx: usize, routes: Vec<(usize, usize)>) {
-        let out_bc = &mut self.components[out_bc_idx];
-        let routes = routes.into_iter().map(|(src, dst)| GpioRoute { src, dst }).collect();
-        out_bc.subscribers.push(Subscriber{ bc_idx, routes });
-    }
-
     pub fn get_component(&mut self, bc_idx: usize) -> io::Result<&mut dyn Component> {
         let bc = self.components.get_mut(bc_idx).ok_or(io::Error::other(format!("Component with index {bc_idx} does not exist.")))?;
         Ok(bc.component.as_mut())
@@ -146,8 +198,9 @@ impl Board {
         self.seq += 1;
     }
 
-    // Runs f on a component, then takes care of what it asked for: wakeups,
-    // and outputs to deliver to the subscribers.
+    // Runs f on a component, then schedules what it asked for: wakeups
+    // and pin drives. A drive without delay still reaches the net at the
+    // current time, within the same Board::step().
     fn dispatch<F>(&mut self, bc_idx: usize, f: F)
     where F: FnOnce(&mut dyn Component, &mut Ctx) {
         let mut ctx = Ctx::new(self.now);
@@ -155,30 +208,37 @@ impl Board {
         for time in ctx.take_wakeups() {
             self.schedule(time, EventKind::Wake(bc_idx));
         }
-        self.deliver(bc_idx);
+        for (pin, level, time) in ctx.take_drives() {
+            let state = &mut self.components[bc_idx].pins[pin];
+            if state.net.is_none() || state.scheduled == level {
+                continue;
+            }
+            state.scheduled = level;
+            self.schedule(time, EventKind::Drive(bc_idx, pin, level));
+        }
+        self.redraw(bc_idx);
     }
 
-    // Delivers the pending outputs of bc_idx, then those of the components
-    // that received them, until nothing is pending.
-    fn deliver(&mut self, bc_idx: usize) {
-        let mut sources = vec![bc_idx];
-        while let Some(bc_idx) = sources.pop() {
-            let bc = &self.components[bc_idx];
-            let deliveries: Vec<_> = bc.subscribers
-                .iter().flat_map(|sub| sub.routes.iter()
-                    .filter(|route| bc.component.output_pending(route.src))
-                    .map(|route| {
-                        let values = bc.component
-                            .get_gpio_values(route.src)
-                            .expect("Gpio group not found.");
-                        (sub.bc_idx, route.dst, values)})).collect();
-            self.components[bc_idx].component.clear_output_pending();
-            self.redraw(bc_idx);
+    // Applies a pin's new drive level and, if the net's level changes,
+    // tells every pin on the net.
+    fn drive(&mut self, bc_idx: usize, pin: usize, level: Level) {
+        let state = &mut self.components[bc_idx].pins[pin];
+        state.drive = level;
+        let net_idx = state.net.unwrap();
 
-            for (target_idx, gpio_idx, values) in deliveries {
-                self.components[target_idx].component.receive_input(gpio_idx, values);
-                sources.push(target_idx);
-            }
+        let net = &self.nets[net_idx];
+        let new_level = Level::resolve(net.pins.iter().map(|(bc_idx, pin)| self.components[*bc_idx].pins[*pin].drive));
+        if new_level == net.level {
+            return;
+        }
+        if new_level == Level::X {
+            self.contentions += 1;
+            eprintln!("{} ns: bus contention on net {}", self.now / NS, net.name);
+        }
+        self.nets[net_idx].level = new_level;
+
+        for (bc_idx, pin) in self.nets[net_idx].pins.clone() {
+            self.dispatch(bc_idx, |c, ctx| c.input_changed(pin, new_level, ctx));
         }
     }
 
@@ -236,6 +296,9 @@ impl Board {
                 },
                 EventKind::Wake(bc_idx) => {
                     self.dispatch(bc_idx, |c, ctx| c.wake(ctx));
+                },
+                EventKind::Drive(bc_idx, pin, level) => {
+                    self.drive(bc_idx, pin, level);
                 }
             }
         }

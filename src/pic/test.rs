@@ -141,7 +141,7 @@ where F: Fn(&String) {
     let mut pic: PIC16F876 = PIC16F876::new();
     pic.load_rom(&ByteData::new_from_intel_hex(&gpsim_data.hex.to_str().unwrap())?);
 
-    let pic_idx = board.add_component(Box::new(pic));
+    let pic_idx = board.add_component("PIC", Box::new(pic));
     board.add_breakpoint(pic_idx, gpsim_test_regs.endl as usize);
     board.init();
     board.run();

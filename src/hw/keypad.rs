@@ -1,43 +1,46 @@
 use std::collections::HashMap;
-use crate::common::component::Component;
+use crate::common::component::{ Component, Ctx };
 use crate::KeyInput;
-use crate::common::bus::{ BusError };
-use crate::common::time::{ Time, Ctx };
+use crate::common::net::Level;
+use crate::common::time::Time;
 
-// Models a keypad encoder (e.g. 74C922): a pressed key puts its code on the
-// output pins together with the strobe ("data available") bit. A terminal
-// only reports presses, so a key is released hold_time after its press.
+const PINS: [&str; 5] = ["D0", "D1", "D2", "D3", "DA"];
+const DA: usize = 4;
+
+// Models a keypad encoder (e.g. 74C922): a pressed key puts its code on
+// D0..D3 and sets DA ("data available"). A terminal only reports presses,
+// so a key is released hold_time after its press.
 pub struct Keypad {
     key_map: HashMap<u8, u8>,
-    pin_values: u8,
-    strobe_mask: u8,
     hold_time: Time,
-    release_at: Option<Time>,
-    output_pending: bool
+    release_at: Option<Time>
 }
 
 impl Keypad {
-    pub fn new(strobe_mask: u8, hold_time: Time) -> Self {
+    pub fn new(hold_time: Time) -> Self {
         Self { key_map: HashMap::<u8, u8>::new(),
-               pin_values: 0x0,
-               strobe_mask,
                hold_time,
-               release_at: None,
-               output_pending: false }
+               release_at: None }
     }
 
-    pub fn key_to_pin(&mut self, key: u8, pin_values: u8) {
-        self.key_map.insert(key, pin_values);
+    pub fn key_to_pin(&mut self, key: u8, code: u8) {
+        self.key_map.insert(key, code);
+    }
+
+    fn drive(&self, code: u8, available: bool, ctx: &mut Ctx) {
+        for bit in 0..DA {
+            ctx.drive(bit, Level::from_bit(code & (1 << bit) != 0));
+        }
+        ctx.drive(DA, Level::from_bit(available));
     }
 }
 
 impl KeyInput for Keypad {
     fn get_key(&mut self, key: u8, ctx: &mut Ctx) {
-        if let Some(new_pin_values) = self.key_map.get(&key) {
-            self.pin_values = *new_pin_values | self.strobe_mask;
+        if let Some(code) = self.key_map.get(&key) {
+            self.drive(*code, true, ctx);
             self.release_at = Some(ctx.now() + self.hold_time);
             ctx.wake_after(self.hold_time);
-            self.output_pending = true;
         }
     }
 }
@@ -45,19 +48,17 @@ impl KeyInput for Keypad {
 impl Component for Keypad {
     fn init(&mut self) { }
 
+    fn pins(&self) -> &[&'static str] {
+        &PINS
+    }
+
     // A new press moves release_at: the wakeups of earlier presses are stale.
     fn wake(&mut self, ctx: &mut Ctx) {
         if self.release_at.is_some_and(|release_at| ctx.now() >= release_at) {
             self.release_at = None;
-            self.pin_values = 0x0;
-            self.output_pending = true;
+            self.drive(0, false, ctx);
         }
     }
-
-    fn receive_input(&mut self, _gpio_idx: usize, _pin_values: usize) { }
-    fn output_pending(&self, _gpio_idx: usize) -> bool { self.output_pending }
-    fn clear_output_pending(&mut self) { self.output_pending = false; }
-    fn get_gpio_values(&self, _gpio_idx: usize) -> Result<usize, BusError> { Ok(self.pin_values as usize) }
 
     fn as_key_input(&self) -> Option<&dyn KeyInput> { Some(self) }
     fn as_key_input_mut(&mut self) -> Option<&mut dyn KeyInput> { Some(self) }
