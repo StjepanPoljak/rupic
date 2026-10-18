@@ -100,8 +100,6 @@ impl Component for ST7920 {
 
     fn init(&mut self) { }
 
-    fn step(&mut self) -> u32 { 0 }
-
     fn receive_input(&mut self, gpio_idx: usize, pin_values: usize) {
         if gpio_idx == ST7920_CONTROL {
             // The data bus is driven only while a read is strobed (RW = 1, E = 1).

@@ -6,6 +6,7 @@ use crate::common::byte_data::*;
 use crate::common::bus::{ Bus, GpioGroup, BusError };
 use crate::common::component::{ Component };
 use crate::common::mcu::{ MCU, RegDump, MemDump };
+use crate::common::time::{ Time, Ctx, S };
 
 #[cfg(test)]
 mod tests {
@@ -104,12 +105,18 @@ impl PIC16F876Bus {
 
 pub struct PIC16F876 {
     pub core: P16,
-    pub bus: PIC16F876Bus
+    pub bus: PIC16F876Bus,
+    // Instruction cycle: 4 oscillator periods.
+    cycle_time: Time
 }
 
 impl PIC16F876 {
     pub fn new() -> Self {
-        Self { core: P16::new(), bus: PIC16F876Bus::new() }
+        Self { core: P16::new(), bus: PIC16F876Bus::new(), cycle_time: 4 * S / 4_000_000 }
+    }
+
+    pub fn set_fosc(&mut self, hz: u64) {
+        self.cycle_time = 4 * S / hz;
     }
 }
 
@@ -237,7 +244,11 @@ impl Component for PIC16F876 {
         self.bus.write(Register::PCLATH as u16, 0x0);
     }
 
-    fn step(&mut self) -> u32 {
+    fn clock_period(&self) -> Option<Time> {
+        Some(self.cycle_time)
+    }
+
+    fn step(&mut self, _ctx: &mut Ctx) -> u32 {
         let insn = self.bus.fetch(self.core.pc);
         let cycles = self.core.exec_insn(insn, &mut self.bus).expect(format!("Unknown instruction: {:#x}", insn).as_str());
         self.core.pc = self.core.pc.wrapping_add(1) & 0x1fff;

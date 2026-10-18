@@ -1,7 +1,8 @@
 // Headless smoke tests running the real TETRIS.hex game image.
-use crate::{ Board, KEYPAD_HOLD_STEPS };
+use crate::{ Board, KEYPAD_HOLD };
 use crate::common::byte_data::ByteData;
 use crate::common::mcu::MCU;
+use crate::common::time::{ Time, US, MS, S };
 use crate::hw::keypad::Keypad;
 use crate::hw::st7920::{ ST7920, ST7920_DATA, ST7920_CONTROL };
 use crate::pic::pic16f876::PIC16F876;
@@ -12,8 +13,7 @@ const PLAYERROTATION: usize = 0x6f;
 
 struct Tetris {
     board: Board,
-    pic_idx: usize,
-    steps: u64
+    pic_idx: usize
 }
 
 impl Tetris {
@@ -25,7 +25,7 @@ impl Tetris {
         let pic_idx = board.add_component(Box::new(pic));
         let display_idx = board.add_component(Box::new(ST7920::new()));
 
-        let mut keypad = Keypad::new(0x10, KEYPAD_HOLD_STEPS);
+        let mut keypad = Keypad::new(0x10, KEYPAD_HOLD);
         keypad.key_to_pin(b'a', 0x3);
         keypad.key_to_pin(b'd', 0x4);
         keypad.key_to_pin(b's', 0x2);
@@ -37,14 +37,14 @@ impl Tetris {
         board.subscribe(pic_idx, keypad_idx, vec![(0, 1)]);
         board.init();
 
-        Self { board, pic_idx, steps: 0 }
+        Self { board, pic_idx }
     }
 
-    fn run(&mut self, steps: u64) {
-        for _ in 0..steps {
+    fn run(&mut self, duration: Time) {
+        let end = self.board.now() + duration;
+        while self.board.now() < end {
             self.board.step();
         }
-        self.steps += steps;
     }
 
     fn mem(&mut self, addr: usize) -> u8 {
@@ -60,10 +60,10 @@ impl Tetris {
         self.board.push_key(key);
     }
 
-    fn run_until_pc(&mut self, pc: usize, max_steps: u64) -> bool {
-        for _ in 0..max_steps {
+    fn run_until_pc(&mut self, pc: usize, timeout: Time) -> bool {
+        let end = self.board.now() + timeout;
+        while self.board.now() < end {
             self.board.step();
-            self.steps += 1;
             if self.pc() == pc {
                 return true;
             }
@@ -77,9 +77,9 @@ const LMAIN: usize = 0x36;
 
 fn started_game() -> Tetris {
     let mut t = Tetris::new();
-    assert!(t.run_until_pc(INTRO_WAIT, 5_000_000), "title screen never waits for input");
+    assert!(t.run_until_pc(INTRO_WAIT, 7 * S), "title screen never waits for input");
     t.press(b' ');
-    assert!(t.run_until_pc(LMAIN, 5_000_000), "space did not start the game");
+    assert!(t.run_until_pc(LMAIN, 7 * S), "space did not start the game");
     t
 }
 
@@ -87,7 +87,7 @@ fn started_game() -> Tetris {
 fn piece_falls_on_timer1() {
     let mut t = started_game();
     let y0 = t.mem(PLAYERYPOS);
-    t.run(1_000_000);
+    t.run(1400 * MS);
     let y1 = t.mem(PLAYERYPOS);
     assert!(y1 < y0, "piece did not fall: y {} -> {}", y0, y1);
 }
@@ -97,10 +97,10 @@ fn keys_move_piece_once_per_press() {
     let mut t = started_game();
     let mut check = |t: &mut Tetris, key: u8, dx: i32| {
         // land the press at varying points of the main loop / redraws
-        t.run(1 + (t.steps * 7919) % 50_000);
+        t.run(US + (t.board.now() / US * 7919) % (66 * MS));
         let x0 = t.mem(PLAYERXPOS) as i32;
         t.press(key);
-        t.run(400_000);
+        t.run(530 * MS);
         let x1 = t.mem(PLAYERXPOS) as i32;
         assert_eq!(x1 - x0, dx, "key {:?}: x {} -> {}", key as char, x0, x1);
     };
@@ -116,11 +116,11 @@ fn rotate_and_drop() {
     let mut t = started_game();
     let r0 = t.mem(PLAYERROTATION);
     t.press(b' ');
-    t.run(200_000);
+    t.run(270 * MS);
     assert_ne!(t.mem(PLAYERROTATION), r0, "space did not rotate");
 
     let y0 = t.mem(PLAYERYPOS);
     t.press(b's');
-    t.run(150_000);
+    t.run(200 * MS);
     assert!(t.mem(PLAYERYPOS) < y0, "s did not move the piece down");
 }

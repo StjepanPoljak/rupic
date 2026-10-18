@@ -2,26 +2,27 @@ use std::collections::HashMap;
 use crate::common::component::Component;
 use crate::KeyInput;
 use crate::common::bus::{ BusError };
+use crate::common::time::{ Time, Ctx };
 
 // Models a keypad encoder (e.g. 74C922): a pressed key puts its code on the
 // output pins together with the strobe ("data available") bit. A terminal
-// only reports presses, so a key is released after hold_steps steps.
+// only reports presses, so a key is released hold_time after its press.
 pub struct Keypad {
     key_map: HashMap<u8, u8>,
     pin_values: u8,
     strobe_mask: u8,
-    hold_steps: u32,
-    hold_remaining: u32,
+    hold_time: Time,
+    release_at: Option<Time>,
     output_pending: bool
 }
 
 impl Keypad {
-    pub fn new(strobe_mask: u8, hold_steps: u32) -> Self {
+    pub fn new(strobe_mask: u8, hold_time: Time) -> Self {
         Self { key_map: HashMap::<u8, u8>::new(),
                pin_values: 0x0,
                strobe_mask,
-               hold_steps,
-               hold_remaining: 0,
+               hold_time,
+               release_at: None,
                output_pending: false }
     }
 
@@ -31,10 +32,11 @@ impl Keypad {
 }
 
 impl KeyInput for Keypad {
-    fn get_key(&mut self, key: u8) {
+    fn get_key(&mut self, key: u8, ctx: &mut Ctx) {
         if let Some(new_pin_values) = self.key_map.get(&key) {
             self.pin_values = *new_pin_values | self.strobe_mask;
-            self.hold_remaining = self.hold_steps;
+            self.release_at = Some(ctx.now() + self.hold_time);
+            ctx.wake_after(self.hold_time);
             self.output_pending = true;
         }
     }
@@ -43,15 +45,13 @@ impl KeyInput for Keypad {
 impl Component for Keypad {
     fn init(&mut self) { }
 
-    fn step(&mut self) -> u32 {
-        if self.hold_remaining > 0 {
-            self.hold_remaining -= 1;
-            if self.hold_remaining == 0 {
-                self.pin_values = 0x0;
-                self.output_pending = true;
-            }
+    // A new press moves release_at: the wakeups of earlier presses are stale.
+    fn wake(&mut self, ctx: &mut Ctx) {
+        if self.release_at.is_some_and(|release_at| ctx.now() >= release_at) {
+            self.release_at = None;
+            self.pin_values = 0x0;
+            self.output_pending = true;
         }
-        0
     }
 
     fn receive_input(&mut self, _gpio_idx: usize, _pin_values: usize) { }

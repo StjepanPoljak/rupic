@@ -5,3 +5,4 @@ pub mod component;
 pub mod bus;
 pub mod mcu;
 pub mod term;
+pub mod time;

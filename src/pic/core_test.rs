@@ -1,6 +1,7 @@
 // Core tests that don't need gpasm/gpsim: programs are hand-encoded opcodes.
 use crate::common::bus::Bus;
 use crate::common::component::Component;
+use crate::common::time::Ctx;
 
 const STATUS: u16 = 0x03;
 const C: u8 = 0x01;
@@ -19,7 +20,7 @@ fn run(program: &[u16], steps: usize) -> PIC16F876 {
     pic.bus.rom[..program.len()].copy_from_slice(program);
     pic.init();
     for _ in 0..steps {
-        pic.step();
+        pic.step(&mut Ctx::new(0));
     }
     pic
 }
@@ -128,7 +129,7 @@ fn output_pending_is_per_port() {
     assert!(pic.output_pending(1));
     assert!(!pic.output_pending(0) && !pic.output_pending(2));
     pic.clear_output_pending();
-    pic.step(); // ROM is 0x3fff (ADDLW 0xff) past the program: no port write
+    pic.step(&mut Ctx::new(0)); // ROM is 0x3fff (ADDLW 0xff) past the program: no port write
     assert!(!pic.output_pending(1));
 }
 
