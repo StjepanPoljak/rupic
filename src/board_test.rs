@@ -1,5 +1,6 @@
 // Net and scheduler tests with scripted components.
 use std::cell::RefCell;
+use std::io::{ self, Write };
 use std::rc::Rc;
 use crate::Board;
 use crate::common::component::{ Component, Ctx };
@@ -125,4 +126,86 @@ fn pin_on_two_nets_panics() {
 fn unknown_pin_panics() {
     let (mut b, _) = board(vec![], vec![]);
     b.net("N", &["A.P7"]);
+}
+
+// A Write whose bytes stay readable after the board takes it.
+#[derive(Clone, Default)]
+pub struct SharedBuf(Rc<RefCell<Vec<u8>>>);
+
+impl SharedBuf {
+    pub fn text(&self) -> String {
+        String::from_utf8(self.0.borrow().clone()).unwrap()
+    }
+}
+
+impl Write for SharedBuf {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.borrow_mut().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> { Ok(()) }
+}
+
+const VCD_HEADER: &str = "$version pic16f876 board $end
+$timescale 1ps $end
+$scope module board $end
+";
+
+#[test]
+fn vcd_traces_buses_and_nets() {
+    let (mut b, _) = board(vec![vec![(0, High, 0)], vec![(0, Z, 0)], vec![(0, Low, 0)]],
+                           vec![vec![(0, High, 5 * NS)], vec![(1, High, 0)]]);
+    b.net("N", &["A.P0"]);
+    b.bus("D", 2, &["B.P", "PROBE.IN"]);
+    let buf = SharedBuf::default();
+    b.trace(Box::new(buf.clone()), &[]).unwrap();
+    b.init();
+    run_until(&mut b, 3 * PERIOD);
+    b.stop_trace().unwrap();
+    assert_eq!(buf.text(), VCD_HEADER.to_string() + "\
+$var wire 2 ! D [1:0] $end
+$var wire 1 \" N $end
+$upscope $end
+$enddefinitions $end
+#0
+bzz !
+1\"
+#5000
+bz1 !
+#10000
+b11 !
+z\"
+#20000
+0\"
+");
+}
+
+#[test]
+fn vcd_traces_named_signals_only() {
+    let (mut b, _) = board(vec![vec![(0, High, 0)]], vec![vec![(0, High, 0)]]);
+    b.net("N", &["A.P0"]);
+    b.bus("D", 2, &["B.P", "PROBE.IN"]);
+    let buf = SharedBuf::default();
+    b.trace(Box::new(buf.clone()), &["D1", "N"]).unwrap();
+    b.init();
+    run_until(&mut b, PERIOD);
+    b.stop_trace().unwrap();
+    assert_eq!(buf.text(), VCD_HEADER.to_string() + "\
+$var wire 1 ! D1 $end
+$var wire 1 \" N $end
+$upscope $end
+$enddefinitions $end
+#0
+z!
+1\"
+");
+}
+
+#[test]
+fn vcd_rejects_unknown_signal() {
+    let (mut b, _) = board(vec![], vec![]);
+    b.net("N", &["A.P0"]);
+    let err = b.trace(Box::new(SharedBuf::default()), &["N", "M"]).unwrap_err();
+    assert_eq!(err.to_string(), "No net or bus called M.");
 }

@@ -7,3 +7,4 @@ pub mod mcu;
 pub mod term;
 pub mod time;
 pub mod net;
+pub mod vcd;

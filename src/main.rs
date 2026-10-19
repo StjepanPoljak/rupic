@@ -1,4 +1,5 @@
-use std::io::{ self };
+use std::io::{ self, BufWriter };
+use std::fs::File;
 use std::sync::atomic::{ Ordering, AtomicU64, AtomicBool };
 
 static SIGINT: AtomicBool = AtomicBool::new(false);
@@ -77,14 +78,36 @@ fn add_tetris(board: &mut Board) -> io::Result<usize> {
     Ok(pic_idx)
 }
 
-fn main() -> io::Result<()> {
+fn main() {
+    if let Err(err) = run() {
+        eprintln!("{err}");
+        std::process::exit(1);
+    }
+}
+
+// Usage: pic16f876 [--vcd FILE [NET_OR_BUS...]]
+// --vcd writes a VCD trace of the named nets and buses, or of all of them.
+fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut board = Board::new();
     add_tetris(&mut board)?;
+
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.split_first() {
+        Some((flag, rest)) if flag == "--vcd" => {
+            let (path, names) = rest.split_first().ok_or("--vcd needs a file name.")?;
+            let names: Vec<&str> = names.iter().map(String::as_str).collect();
+            board.trace(Box::new(BufWriter::new(File::create(path)?)), &names)?;
+        },
+        Some((arg, _)) => return Err(format!("Unknown argument {arg}.").into()),
+        None => ()
+    }
+
     board.set_realtime(true);
     board.init();
 
     unsafe { install_interrupt_signal() };
     board.run();
 
+    board.stop_trace()?;
     Ok(())
 }

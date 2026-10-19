@@ -1,5 +1,7 @@
 // Headless smoke tests running the real TETRIS.hex game image.
+use std::collections::HashMap;
 use crate::{ Board, add_tetris };
+use crate::board_test::SharedBuf;
 use crate::common::mcu::MCU;
 use crate::common::time::{ Time, US, MS, S };
 
@@ -105,4 +107,54 @@ fn rotate_and_drop() {
     t.press(b's');
     t.run(200 * MS);
     assert!(t.mem(PLAYERYPOS) < y0, "s did not move the piece down");
+}
+
+// Writes to the LCD found in a VCD of LCD_RS, LCD_RW, LCD_E and LCD_DB, as
+// (time, RS, DB): the values when E falls with RW = 0.
+fn lcd_writes(vcd: &str) -> Vec<(Time, char, u8)> {
+    let mut names = HashMap::new();
+    let mut values: HashMap<&str, &str> = HashMap::new();
+    let mut writes = vec![];
+    let mut time = 0;
+    for line in vcd.lines() {
+        let words: Vec<&str> = line.split_whitespace().collect();
+        let (name, value) = match words[..] {
+            ["$var", _, _, id, name, ..] => {
+                names.insert(id, name);
+                continue;
+            },
+            [word] if word.starts_with('#') => {
+                time = word[1..].parse().unwrap();
+                continue;
+            },
+            [value, id] if value.starts_with('b') => (names[id], &value[1..]),
+            [word] if !word.starts_with('$') => (names[&word[1..]], &word[..1]),
+            _ => continue
+        };
+        if name == "LCD_E" && values.get("LCD_E") == Some(&"1") && value == "0" && values["LCD_RW"] == "0" {
+            writes.push((time, values["LCD_RS"].chars().next().unwrap(), u8::from_str_radix(values["LCD_DB"], 2).unwrap()));
+        }
+        values.insert(name, value);
+    }
+    writes
+}
+
+#[test]
+fn vcd_shows_lcd_setup() {
+    let mut board = Board::new_headless();
+    add_tetris(&mut board).unwrap();
+    let buf = SharedBuf::default();
+    board.trace(Box::new(buf.clone()), &["LCD_RS", "LCD_RW", "LCD_E", "LCD_DB"]).unwrap();
+    board.init();
+    // LCD_Setup starts after about 1.04 s and is done by 1.06 s.
+    while board.now() < 1100 * MS {
+        board.step();
+    }
+    board.stop_trace().unwrap();
+
+    let writes = lcd_writes(&buf.text());
+    let setup: Vec<(char, u8)> = writes.iter().take(7).map(|(_, rs, db)| (*rs, *db)).collect();
+    assert_eq!(setup, vec![('0', 0x30), ('0', 0x30), ('0', 0x0c), ('0', 0x01), ('0', 0x06), ('0', 0x34), ('0', 0x36)],
+               "first LCD writes: {:x?}", &writes[..writes.len().min(10)]);
+    assert!(writes.len() > 7, "no LCD writes after the setup");
 }

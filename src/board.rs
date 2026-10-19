@@ -1,4 +1,4 @@
-use std::io::{ self };
+use std::io::{ self, Write };
 use std::fmt;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::Receiver;
@@ -11,6 +11,7 @@ use crate::common::component::{ Component, Ctx };
 use crate::common::net::Level;
 use crate::common::term::{ init_term, draw, present, KeyEvent };
 use crate::common::time::{ Time, NS };
+use crate::common::vcd::Vcd;
 
 // Board::run checks the throttle and the frame timer every SYNC_STEPS steps.
 const SYNC_STEPS: u32 = 1_000;
@@ -20,13 +21,15 @@ const MAX_LAG: Duration = Duration::from_millis(100);
 
 #[derive(Debug)]
 pub enum BoardError {
-    ComponentNotFound
+    ComponentNotFound,
+    NoSuchSignal(String)
 }
 
 impl fmt::Display for BoardError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::ComponentNotFound => write!(f, "Component not found.")
+            Self::ComponentNotFound => write!(f, "Component not found."),
+            Self::NoSuchSignal(name) => write!(f, "No net or bus called {name}.")
         }
     }
 }
@@ -72,6 +75,9 @@ enum EventKind {
 pub struct Board {
     components: Vec<BoardComponent>,
     nets: Vec<Net>,
+    // Buses made with bus(): (name, nets LSB first).
+    buses: Vec<(String, Vec<usize>)>,
+    vcd: Option<Vcd>,
     contentions: u64,
     needs_term: bool,
     term_rx: Option<Receiver<KeyEvent>>,
@@ -86,7 +92,7 @@ pub struct Board {
 
 impl Board {
     pub fn new() -> Self {
-        Self { components: vec![], nets: vec![], contentions: 0, needs_term: false, term_rx: None, events: VecDeque::new(), headless: false,
+        Self { components: vec![], nets: vec![], buses: vec![], vcd: None, contentions: 0, needs_term: false, term_rx: None, events: VecDeque::new(), headless: false,
                queue: BinaryHeap::new(), seq: 0, now: 0, realtime: false }
     }
 
@@ -163,10 +169,47 @@ impl Board {
     // connects pin i of every prefix, e.g. bus("D", 8, &["PIC.RC", "LCD.DB"])
     // connects PIC.RC0 to LCD.DB0 with net D0, and so on.
     pub fn bus(&mut self, name: &str, width: usize, prefixes: &[&str]) {
+        self.buses.push((name.to_string(), (self.nets.len()..self.nets.len() + width).collect()));
         for i in 0..width {
             let pin_names: Vec<String> = prefixes.iter().map(|prefix| format!("{prefix}{i}")).collect();
             let pin_names: Vec<&str> = pin_names.iter().map(String::as_str).collect();
             self.net(&format!("{name}{i}"), &pin_names);
+        }
+    }
+
+    // Starts a VCD trace of the named nets and buses to out; a bus is
+    // traced as one vector. No names traces every bus, and every net that
+    // isn't part of one.
+    pub fn trace(&mut self, out: Box<dyn Write>, names: &[&str]) -> Result<(), Box<dyn std::error::Error>> {
+        let signals: Vec<(String, Vec<usize>)> = if names.is_empty() {
+            let in_bus: Vec<usize> = self.buses.iter().flat_map(|(_, nets)| nets.clone()).collect();
+            let mut signals = self.buses.clone();
+            signals.extend(self.nets.iter().enumerate().filter(|(net_idx, _)| !in_bus.contains(net_idx))
+                           .map(|(net_idx, net)| (net.name.clone(), vec![net_idx])));
+            signals
+        } else {
+            names.iter().map(|name| {
+                if let Some(bus) = self.buses.iter().find(|(bus_name, _)| bus_name == name) {
+                    Ok(bus.clone())
+                } else if let Some(net_idx) = self.nets.iter().position(|net| net.name == *name) {
+                    Ok((name.to_string(), vec![net_idx]))
+                } else {
+                    Err(BoardError::NoSuchSignal(name.to_string()))
+                }
+            }).collect::<Result<_, _>>()?
+        };
+        self.vcd = Some(Vcd::new(out, &signals, self.nets.len())?);
+        Ok(())
+    }
+
+    // Writes out what's left of the trace and stops it.
+    pub fn stop_trace(&mut self) -> io::Result<()> {
+        match self.vcd.take() {
+            Some(mut vcd) => {
+                vcd.dump(self.now, |net_idx| self.nets[net_idx].level)?;
+                vcd.flush()
+            },
+            None => Ok(())
         }
     }
 
@@ -236,6 +279,9 @@ impl Board {
             eprintln!("{} ns: bus contention on net {}", self.now / NS, net.name);
         }
         self.nets[net_idx].level = new_level;
+        if let Some(vcd) = &mut self.vcd {
+            vcd.net_changed(net_idx);
+        }
 
         for (bc_idx, pin) in self.nets[net_idx].pins.clone() {
             self.dispatch(bc_idx, |c, ctx| c.input_changed(pin, new_level, ctx));
@@ -300,6 +346,13 @@ impl Board {
                 EventKind::Drive(bc_idx, pin, level) => {
                     self.drive(bc_idx, pin, level);
                 }
+            }
+        }
+
+        if let Some(vcd) = &mut self.vcd {
+            if let Err(err) = vcd.dump(self.now, |net_idx| self.nets[net_idx].level) {
+                eprintln!("VCD trace stopped: {err}");
+                self.vcd = None;
             }
         }
         got_bp
