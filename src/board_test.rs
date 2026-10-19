@@ -209,3 +209,28 @@ fn vcd_rejects_unknown_signal() {
     let err = b.trace(Box::new(SharedBuf::default()), &["N", "M"]).unwrap_err();
     assert_eq!(err.to_string(), "No net or bus called M.");
 }
+
+#[test]
+fn vcd_shows_contention_as_x() {
+    let (mut b, _) = board(vec![vec![(0, High, 0)]], vec![vec![], vec![(0, Low, 0)], vec![(0, Z, 0)]]);
+    b.net("N", &["A.P0", "B.P0"]);
+    let buf = SharedBuf::default();
+    b.trace(Box::new(buf.clone()), &[]).unwrap();
+    b.init();
+    run_until(&mut b, 3 * PERIOD);
+    b.stop_trace().unwrap();
+    assert!(buf.text().ends_with("#0\n1!\n#10000\nx!\n#20000\n1!\n"), "{}", buf.text());
+}
+
+#[test]
+fn vcd_skips_change_undone_at_same_time() {
+    // At PERIOD, A drives P0 low and back high again.
+    let (mut b, _) = board(vec![vec![(0, High, 0)], vec![(0, Low, 0), (0, High, 0)], vec![(0, Low, 0)]], vec![]);
+    b.net("N", &["A.P0"]);
+    let buf = SharedBuf::default();
+    b.trace(Box::new(buf.clone()), &[]).unwrap();
+    b.init();
+    run_until(&mut b, 3 * PERIOD);
+    b.stop_trace().unwrap();
+    assert!(buf.text().ends_with("#0\n1!\n#20000\n0!\n"), "{}", buf.text());
+}
