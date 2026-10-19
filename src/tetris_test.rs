@@ -1,6 +1,7 @@
 // Headless smoke tests running the real TETRIS.hex game image.
 use std::collections::HashMap;
-use crate::{ Board, add_tetris };
+use std::path::Path;
+use crate::{ Board, DEFAULT_BOARD };
 use crate::board_test::SharedBuf;
 use crate::common::mcu::MCU;
 use crate::common::time::{ Time, US, MS, S };
@@ -8,6 +9,12 @@ use crate::common::time::{ Time, US, MS, S };
 const PLAYERXPOS: usize = 0x72;
 const PLAYERYPOS: usize = 0x73;
 const PLAYERROTATION: usize = 0x6f;
+
+// Loads the Tetris schematic; returns the PIC's index.
+fn load_tetris(board: &mut Board) -> usize {
+    crate::kicad::load(board, Path::new(DEFAULT_BOARD)).unwrap();
+    board.find_component("U1").unwrap()
+}
 
 struct Tetris {
     board: Board,
@@ -17,7 +24,7 @@ struct Tetris {
 impl Tetris {
     fn new() -> Self {
         let mut board = Board::new_headless();
-        let pic_idx = add_tetris(&mut board).unwrap();
+        let pic_idx = load_tetris(&mut board);
         board.init();
 
         Self { board, pic_idx }
@@ -142,7 +149,7 @@ fn lcd_writes(vcd: &str) -> Vec<(Time, char, u8)> {
 #[test]
 fn vcd_shows_lcd_setup() {
     let mut board = Board::new_headless();
-    add_tetris(&mut board).unwrap();
+    load_tetris(&mut board);
     let buf = SharedBuf::default();
     board.trace(Box::new(buf.clone()), &["LCD_RS", "LCD_RW", "LCD_E", "LCD_DB"]).unwrap();
     board.init();
@@ -158,3 +165,4 @@ fn vcd_shows_lcd_setup() {
                "first LCD writes: {:x?}", &writes[..writes.len().min(10)]);
     assert!(writes.len() > 7, "no LCD writes after the setup");
 }
+

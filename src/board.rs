@@ -168,6 +168,7 @@ impl Board {
     // Connects a bus of width nets, called name0, name1, ...; net i
     // connects pin i of every prefix, e.g. bus("D", 8, &["PIC.RC", "LCD.DB"])
     // connects PIC.RC0 to LCD.DB0 with net D0, and so on.
+    #[allow(unused)]
     pub fn bus(&mut self, name: &str, width: usize, prefixes: &[&str]) {
         self.buses.push((name.to_string(), (self.nets.len()..self.nets.len() + width).collect()));
         for i in 0..width {
@@ -213,6 +214,19 @@ impl Board {
         }
     }
 
+    // Groups nets made with net() into a bus, LSB first, as bus() does.
+    // Panics if a net doesn't exist.
+    pub fn group_bus(&mut self, name: &str, net_names: &[&str]) {
+        let nets = net_names.iter().map(|net_name| self.nets.iter().position(|net| net.name == *net_name)
+            .unwrap_or_else(|| panic!("No net called {net_name}."))).collect();
+        self.buses.push((name.to_string(), nets));
+    }
+
+    #[allow(unused)]
+    pub fn find_component(&self, name: &str) -> Option<usize> {
+        self.components.iter().position(|bc| bc.name == name)
+    }
+
     pub fn add_breakpoint(&mut self, bc_idx: usize, addr: usize) -> (usize, usize) {
         let bc = &mut self.components[bc_idx];
         bc.breakpoints.push(Breakpoint{ addr });
@@ -222,6 +236,7 @@ impl Board {
     pub fn init(&mut self) {
         self.components.iter_mut().for_each(|bc| bc.component.init());
         for bc_idx in 0..self.components.len() {
+            self.dispatch(bc_idx, |c, ctx| c.start(ctx));
             if self.components[bc_idx].component.clock_period().is_some() {
                 self.schedule(self.now, EventKind::Clock(bc_idx));
             }
@@ -231,6 +246,7 @@ impl Board {
         }
     }
 
+    #[allow(unused)]
     pub fn get_component(&mut self, bc_idx: usize) -> io::Result<&mut dyn Component> {
         let bc = self.components.get_mut(bc_idx).ok_or(io::Error::other(format!("Component with index {bc_idx} does not exist.")))?;
         Ok(bc.component.as_mut())

@@ -52,6 +52,9 @@ pub trait Component {
     // Time between two steps, or None for a passive component, which only
     // runs when one of its inputs changes or a wakeup it asked for is due.
     fn clock_period(&self) -> Option<Time> { None }
+    // Called once after init(), at the start of simulated time, e.g. to
+    // drive the pins' first levels.
+    fn start(&mut self, _ctx: &mut Ctx) { }
     // Runs one step of a clocked component; returns the clock periods used.
     fn step(&mut self, _ctx: &mut Ctx) -> u32 { 1 }
     // Called when a wakeup asked for with Ctx::wake_after() is due.

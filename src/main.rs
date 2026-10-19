@@ -1,4 +1,5 @@
-use std::io::{ self, BufWriter };
+use std::io::BufWriter;
+use std::path::Path;
 use std::fs::File;
 use std::sync::atomic::{ Ordering, AtomicU64, AtomicBool };
 
@@ -8,6 +9,7 @@ mod pic;
 mod common;
 mod hw;
 mod board;
+mod kicad;
 
 #[cfg(test)]
 mod tetris_test;
@@ -15,16 +17,9 @@ mod tetris_test;
 mod board_test;
 
 use crate::board::Board;
-use crate::pic::pic16f876::PIC16F876;
-use crate::hw::st7920::ST7920;
-use crate::common::byte_data::ByteData;
-use crate::common::mcu::MCU;
 use crate::common::component::Ctx;
-use crate::common::time::{ Time, MS };
-use crate::hw::keypad::Keypad;
 
-// About 100k instructions of the game at 4 MHz.
-const KEYPAD_HOLD: Time = 130 * MS;
+const DEFAULT_BOARD: &str = "boards/tetris/tetris.kicad_sch";
 
 static MAIN_TID: AtomicU64 = AtomicU64::new(0);
 
@@ -48,36 +43,6 @@ pub unsafe fn install_interrupt_signal() {
     libc::sigaction(libc::SIGINT, &sa, std::ptr::null_mut());
 }
 
-// Puts the Tetris board on board: the PIC running TETRIS.hex, the LCD and
-// the keypad. Returns the PIC's index.
-fn add_tetris(board: &mut Board) -> io::Result<usize> {
-    let mut pic: PIC16F876 = PIC16F876::new();
-    pic.load_rom(&ByteData::new_from_intel_hex("./TETRIS.hex")?);
-    pic.set_fosc(4_000_000);
-    let pic_idx = board.add_component("PIC", Box::new(pic));
-
-    board.add_component("LCD", Box::new(ST7920::new()));
-
-    // The game expects a 74C922-style encoder: key code on RB0..RB3 and
-    // "data available" on RB4. A terminal only reports presses, so each one
-    // is held for KEYPAD_HOLD.
-    let mut keypad: Keypad = Keypad::new(KEYPAD_HOLD);
-    keypad.key_to_pin('a' as u8, 0x3);
-    keypad.key_to_pin('d' as u8, 0x4);
-    keypad.key_to_pin('s' as u8, 0x2);
-    keypad.key_to_pin(' ' as u8, 0x5);
-    keypad.key_to_pin('k' as u8, 0x6);
-    board.add_component("KEYPAD", Box::new(keypad));
-
-    board.net("LCD_RS", &["PIC.RA0", "LCD.RS"]);
-    board.net("LCD_RW", &["PIC.RA1", "LCD.RW"]);
-    board.net("LCD_E", &["PIC.RA2", "LCD.E"]);
-    board.bus("LCD_DB", 8, &["PIC.RC", "LCD.DB"]);
-    board.bus("KEY_D", 4, &["PIC.RB", "KEYPAD.D"]);
-    board.net("KEY_DA", &["PIC.RB4", "KEYPAD.DA"]);
-    Ok(pic_idx)
-}
-
 fn main() {
     if let Err(err) = run() {
         eprintln!("{err}");
@@ -85,21 +50,35 @@ fn main() {
     }
 }
 
-// Usage: pic16f876 [--vcd FILE [NET_OR_BUS...]]
+// Usage: pic16f876 [BOARD] [--check] [--vcd FILE [NET_OR_BUS...]]
+// BOARD is a KiCad schematic (.kicad_sch) or netlist (.net).
+// --check prints how the board was loaded and exits.
 // --vcd writes a VCD trace of the named nets and buses, or of all of them.
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let mut board = Board::new();
-    add_tetris(&mut board)?;
-
     let args: Vec<String> = std::env::args().skip(1).collect();
-    match args.split_first() {
-        Some((flag, rest)) if flag == "--vcd" => {
-            let (path, names) = rest.split_first().ok_or("--vcd needs a file name.")?;
-            let names: Vec<&str> = names.iter().map(String::as_str).collect();
-            board.trace(Box::new(BufWriter::new(File::create(path)?)), &names)?;
-        },
-        Some((arg, _)) => return Err(format!("Unknown argument {arg}.").into()),
-        None => ()
+    let mut args = args.iter().map(String::as_str);
+    let (mut path, mut check, mut vcd) = (None, false, None);
+    while let Some(arg) = args.next() {
+        match arg {
+            "--check" => check = true,
+            "--vcd" => {
+                let file = args.next().ok_or("--vcd needs a file name.")?;
+                vcd = Some((file, args.by_ref().collect::<Vec<&str>>()));
+            },
+            arg if !arg.starts_with("--") && path.is_none() => path = Some(arg),
+            arg => return Err(format!("Unknown argument {arg}.").into())
+        }
+    }
+
+    let mut board = Board::new();
+    let path = path.unwrap_or(DEFAULT_BOARD);
+    let report = kicad::load(&mut board, Path::new(path))?;
+    if check {
+        println!("{report}");
+        return Ok(());
+    }
+    if let Some((file, names)) = vcd {
+        board.trace(Box::new(BufWriter::new(File::create(file)?)), &names)?;
     }
 
     board.set_realtime(true);

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use crate::{Board, ByteData};
+use crate::Board;
+use crate::common::byte_data::ByteData;
 use std::io::{ self };
 use crate::common::mcu::MCU;
 use crate::pic::pic16f876::PIC16F876Bus;
