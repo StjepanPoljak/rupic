@@ -100,6 +100,28 @@ cargo run -- boards/spiram/spiram.kicad_sch --vcd spi.vcd RAM_CS SPI_SCK SPI_MOS
 
 There is no display, so stop it with Ctrl+C.
 
+## Testing against independent references
+
+- **sigrok** (`sigrok_decodes_expected_spi_traffic`, done 2026-10-24): the
+  firmware run is traced to a VCD file and decoded by `sigrok-cli`'s SPI
+  decoder (mode 0). Every transaction must match the traffic that
+  `spiram_test.asm` and the datasheet call for, byte for byte in both
+  directions, with no decoder warnings. This checks the bus (bit order,
+  clock edges, CS framing) without trusting the emulator's own decoding. It
+  doesn't check the RAM's semantics beyond what this firmware does. It
+  needs `sigrok-cli`, just as the gpsim tests need gpsim.
+  - The first time it ran, it showed that the read loops sent leftover
+    bytes on MOSI instead of 0x00. The firmware now sends 0x00.
+  - CS floats until the PIC drives it, because the board's pull-up (R2)
+    isn't emulated. sigrok reads the floating level as low and reports an
+    empty transaction, which the test skips. Emulating pull-ups as weak
+    levels would remove this.
+- **Microchip's Verilog model** under Icarus Verilog (next step): drive it
+  and our model with the same random transactions and compare SO bit by bit.
+  It needs the `23LC1024.v` model from Microchip.
+- **Real hardware:** capture `spiram_test.hex` on a breadboard PIC16F876 and
+  23LC1024 with a logic analyzer, then compare it with the emulator's VCD.
+
 Rebuild the firmware after editing it:
 
 ```
