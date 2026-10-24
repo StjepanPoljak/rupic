@@ -9,6 +9,7 @@ use crate::common::component::Component;
 use crate::common::mcu::MCU;
 use crate::common::time::{ Time, PS, NS, US, MS, S };
 use crate::hw::keypad::Keypad;
+use crate::hw::sram23lc1024::SRAM23LC1024;
 use crate::hw::st7920::ST7920;
 use crate::pic::pic16f876::PIC16F876;
 
@@ -20,6 +21,8 @@ const ST7920_PINOUT: &[(&str, &str)] = &[
 ];
 // MM74C922 DIP-18: data outputs A..D and DA.
 const MM74C922_PINOUT: &[(&str, &str)] = &[("17", "D0"), ("16", "D1"), ("15", "D2"), ("14", "D3"), ("12", "DA")];
+// 23LC1024 DIP-8; pin 3 (SIO2) only matters in SQI mode.
+const SRAM23LC1024_PINOUT: &[(&str, &str)] = &[("1", "CS"), ("2", "SO"), ("5", "SI"), ("6", "SCK"), ("7", "HOLD")];
 // Hold time of a key press; a terminal only reports presses.
 const DEFAULT_KEY_HOLD: Time = 130 * MS;
 
@@ -148,6 +151,10 @@ impl Emu {
                 }
                 (Box::new(keypad), MM74C922_PINOUT)
             },
+            "23LC1024" => {
+                self.check_params(&[])?;
+                (Box::new(SRAM23LC1024::new()), SRAM23LC1024_PINOUT)
+            },
             model => return Err(format!("unknown model {model}"))
         };
 
@@ -199,6 +206,8 @@ mod tests {
     fn builds_models_with_pinouts() {
         let lcd = Emu::parse("ST7920").unwrap().build(Path::new(".")).unwrap();
         assert_eq!(lcd.pinout.unwrap()["4"], "RS");
+        let ram = Emu::parse("23LC1024").unwrap().build(Path::new(".")).unwrap();
+        assert_eq!(ram.pinout.unwrap()["6"], "SCK");
 
         let keypad = Emu::parse(r#"74C922 pins="3:DA""#).unwrap().build(Path::new(".")).unwrap();
         assert_eq!(keypad.pinout.unwrap(), HashMap::from([("3".to_string(), "DA".to_string())]));

@@ -15,6 +15,8 @@ mod kicad;
 mod tetris_test;
 #[cfg(test)]
 mod board_test;
+#[cfg(test)]
+mod spiram_test;
 
 use crate::board::Board;
 use crate::common::component::Ctx;

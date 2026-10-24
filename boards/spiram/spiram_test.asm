@@ -1,0 +1,178 @@
+; Tests the 23LC1024 SPI SRAM with bit-banged SPI (mode 0).
+; Build: gpasm -p p16f876 -o spiram_test.hex spiram_test.asm
+;
+; 1. Reads the mode register (MODE_BEFORE, expect 0x40: sequential).
+; 2. Writes COUNT bytes, i XOR 0xA5, from 0x01FFF0: the last 16 bytes of
+;    the array, then wraps to 0x000000.
+; 3. Reads them back into BUFFER; ERRORS counts mismatches.
+; 4. Switches to byte mode and reads 0x000000 alone (WRAPPED, expect
+;    16 XOR 0xA5), then reads the mode register again (MODE_AFTER, 0x00).
+; 5. Sets DONE to 1 and loops.
+
+	LIST P=16F876
+	#include <p16f876.inc>
+	__CONFIG _XT_OSC & _WDT_OFF & _PWRTE_ON & _BODEN_OFF & _LVP_OFF & _CP_OFF
+
+; The MSSP pins, so the hardware SPI can take over later.
+#define CS	PORTC,2
+#define SCK	PORTC,3
+#define MISO	PORTC,4
+#define MOSI	PORTC,5
+
+; 23LC1024 instructions and modes
+CMD_READ	EQU	0x03
+CMD_WRITE	EQU	0x02
+CMD_RDMR	EQU	0x05
+CMD_WRMR	EQU	0x01
+MODE_BYTE	EQU	0x00
+
+COUNT		EQU	.32
+PATTERN		EQU	0xA5
+
+	CBLOCK	0x20
+	DONE
+	MODE_BEFORE
+	MODE_AFTER
+	ERRORS
+	WRAPPED
+	SPI_BYTE
+	SPI_BITS
+	I
+	ENDC
+BUFFER		EQU	0x40		; COUNT bytes read back
+
+	ORG	0
+	GOTO	MAIN
+
+; Sends W and returns the byte received in W. SI is sampled by the RAM
+; on the rising edge; it shifts out its next bit on the falling edge.
+SPI_XFER:
+	MOVWF	SPI_BYTE
+	MOVLW	8
+	MOVWF	SPI_BITS
+SPI_BIT:
+	BCF	MOSI
+	BTFSC	SPI_BYTE,7
+	BSF	MOSI
+	BSF	SCK
+	BCF	STATUS,C
+	BTFSC	MISO
+	BSF	STATUS,C
+	RLF	SPI_BYTE,F		; bit 7 out, MISO in at bit 0
+	BCF	SCK
+	DECFSZ	SPI_BITS,F
+	GOTO	SPI_BIT
+	MOVF	SPI_BYTE,W
+	RETURN
+
+; Starts a READ or WRITE (in W) at 0x01FFF0.
+SPI_START:
+	BCF	CS
+	CALL	SPI_XFER
+	MOVLW	0x01
+	CALL	SPI_XFER
+	MOVLW	0xFF
+	CALL	SPI_XFER
+	MOVLW	0xF0
+	GOTO	SPI_XFER
+
+; Returns the mode register in W.
+READ_MODE:
+	BCF	CS
+	MOVLW	CMD_RDMR
+	CALL	SPI_XFER
+	CALL	SPI_XFER
+	BSF	CS
+	RETURN
+
+; Z set when I == COUNT.
+I_DONE:
+	MOVLW	COUNT
+	SUBWF	I,W
+	RETURN
+
+MAIN:
+	CLRF	DONE
+	MOVLW	B'00000100'		; CS high, SCK low
+	MOVWF	PORTC
+	BSF	STATUS,RP0
+	MOVLW	B'11010011'		; RC2, RC3, RC5 outputs; RC4 (MISO) input
+	MOVWF	TRISC
+	BCF	STATUS,RP0
+
+	CALL	READ_MODE
+	MOVWF	MODE_BEFORE
+
+	MOVLW	CMD_WRITE
+	CALL	SPI_START
+	CLRF	I
+WRITE_LOOP:
+	MOVF	I,W
+	XORLW	PATTERN
+	CALL	SPI_XFER
+	INCF	I,F
+	CALL	I_DONE
+	BTFSS	STATUS,Z
+	GOTO	WRITE_LOOP
+	BSF	CS
+
+	MOVLW	CMD_READ
+	CALL	SPI_START
+	MOVLW	BUFFER
+	MOVWF	FSR
+	CLRF	I
+READ_LOOP:
+	CALL	SPI_XFER
+	MOVWF	INDF
+	INCF	FSR,F
+	INCF	I,F
+	CALL	I_DONE
+	BTFSS	STATUS,Z
+	GOTO	READ_LOOP
+	BSF	CS
+
+	CLRF	ERRORS
+	MOVLW	BUFFER
+	MOVWF	FSR
+	CLRF	I
+CHECK_LOOP:
+	MOVF	I,W
+	XORLW	PATTERN
+	XORWF	INDF,W
+	BTFSS	STATUS,Z
+	INCF	ERRORS,F
+	INCF	FSR,F
+	INCF	I,F
+	CALL	I_DONE
+	BTFSS	STATUS,Z
+	GOTO	CHECK_LOOP
+
+	BCF	CS
+	MOVLW	CMD_WRMR
+	CALL	SPI_XFER
+	MOVLW	MODE_BYTE
+	CALL	SPI_XFER
+	BSF	CS
+
+	BCF	CS
+	MOVLW	CMD_READ
+	CALL	SPI_XFER
+	MOVLW	0
+	CALL	SPI_XFER
+	MOVLW	0
+	CALL	SPI_XFER
+	MOVLW	0
+	CALL	SPI_XFER
+	CALL	SPI_XFER
+	MOVWF	WRAPPED
+	BSF	CS
+
+	CALL	READ_MODE
+	MOVWF	MODE_AFTER
+
+	MOVLW	1
+	MOVWF	DONE
+FINISHED:
+	GOTO	FINISHED
+
+	END

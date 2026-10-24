@@ -7,3 +7,7 @@
 fp-info-cache
 _autosave-*
 \#auto_saved_files\#
+
+# gpasm listings and debug info next to board firmware
+boards/**/*.cod
+boards/**/*.lst
